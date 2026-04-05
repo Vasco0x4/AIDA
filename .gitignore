@@ -67,3 +67,4 @@ switch-db.sh
 
 # Claude Code internal files
 .claude/
+.aida/container-preference

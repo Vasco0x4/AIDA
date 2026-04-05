@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "aida"
     POSTGRES_DB: str = "aida_assessments"
     POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: str = "5432"
+    POSTGRES_PORT: str = "5434"
 
     # Database URL (will be constructed in validator if not provided)
     DATABASE_URL: Optional[str] = None
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # Container Configuration
     CONTAINER_WORKSPACE_BASE: str = "/workspace"
-    DEFAULT_CONTAINER_NAME: str = "aida-pentest"
+    DEFAULT_CONTAINER_NAME: str = "aida-test-pentest"
     # Comma-separated list of accepted container name prefixes.
     # Both aida- (new) and exegol- (legacy) are accepted for backward compat.
     CONTAINER_PREFIX_FILTER: str = "aida-,exegol-"
@@ -49,7 +49,11 @@ class Settings(BaseSettings):
     LOG_FILE_BACKUP_COUNT: int = 5
 
     # Backend API URL (for MCP server)
-    BACKEND_API_URL: str = "http://localhost:8000/api"
+    BACKEND_API_URL: str = "http://localhost:8001/api"
+
+    # Authentication (JWT)
+    SECRET_KEY: str = "aida-test-secret-key-change-in-production-min-32-chars!"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
 
     # Environment
     ENVIRONMENT: str = "development"
@@ -66,7 +70,7 @@ class Settings(BaseSettings):
         user = os.getenv("POSTGRES_USER", "aida")
         password = os.getenv("POSTGRES_PASSWORD", "aida")
         host = os.getenv("POSTGRES_HOST", "localhost")
-        port = os.getenv("POSTGRES_PORT", "5432")
+        port = os.getenv("POSTGRES_PORT", "5434")
         db = os.getenv("POSTGRES_DB", "aida_assessments")
 
         return f"postgresql://{user}:{password}@{host}:{port}/{db}"

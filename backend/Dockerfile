@@ -1,13 +1,20 @@
 # Backend Dockerfile - FastAPI with hot reload for development
 FROM python:3.11-slim
 
-# Install system dependencies including Docker CLI
+# Install system dependencies including Docker CLI and WeasyPrint libs
 # Docker CLI is required for the ContainerService to run docker exec commands
+# libpango, libcairo, libgdk-pixbuf are required by WeasyPrint for PDF generation
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libcairo2 \
+    libgdk-pixbuf-2.0-0 \
+    libffi-dev \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI from official Docker repository

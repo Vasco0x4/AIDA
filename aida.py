@@ -97,7 +97,7 @@ KIMI_SYSTEM_PROMPT_FILE = AIDA_CONFIG_DIR / "kimi-system.md"
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 DEFAULT_PERMISSION = "default"
-DEFAULT_BACKEND = "http://localhost:8000/api"
+DEFAULT_BACKEND = "http://localhost:8001/api"
 
 # CLI types
 CLIType = Literal["claude", "kimi"]
@@ -331,7 +331,7 @@ def resolve_workspace(assessment_name: str, backend_url: str) -> Optional[dict]:
             console.print("[yellow]Troubleshooting:[/yellow]")
             console.print("  1. Check: [cyan]docker-compose ps[/cyan]")
             console.print("  2. Start: [cyan]docker-compose up -d[/cyan]")
-            console.print("  3. Test:  [cyan]curl http://localhost:8000/health[/cyan]\n")
+            console.print("  3. Test:  [cyan]curl http://localhost:8001/health[/cyan]\n")
             sys.exit(1)
 
         except (httpx.ReadError, httpx.WriteError, httpx.PoolTimeout, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
@@ -379,7 +379,7 @@ def show_cli_not_found():
 @click.command()
 @click.option("-a", "--assessment", help="Load specific assessment")
 @click.option("-m", "--model", default=None, help="Model to use (optional, uses CLI default if not specified)")
-@click.option("--permission-mode", default=None, help=f"Permission mode for Claude Code (default: {DEFAULT_PERMISSION})")
+@click.option("--permission-mode", default=None, help=f"Permission mode for Claude Code: auto, default, dontAsk, acceptEdits, bypassPermissions, plan (default: {DEFAULT_PERMISSION})")
 @click.option("--preprompt", type=click.Path(exists=False), help="Path to custom preprompt file (default: Docs/PrePrompt.txt)")
 @click.option("--base-url", help="Custom API base URL (Claude Code only)")
 @click.option("--api-key", help="API authentication token (Claude Code only)")
@@ -388,7 +388,7 @@ def show_cli_not_found():
 @click.option("-q", "--quiet", is_flag=True, help="Quiet mode (minimal output)")
 @click.option("--cli", "cli_choice", type=click.Choice(["claude", "kimi", "auto"]), default="auto",
               help="Which CLI to use (default: auto-detect)")
-@click.option("-y", "--yes", is_flag=True, help="Auto-approve all actions (Kimi: --yolo, Claude: permission-mode=accept)")
+@click.option("-y", "--yes", is_flag=True, help="Auto-approve all actions (Kimi: --yolo, Claude: permission-mode=auto)")
 @click.argument("prompt", nargs=-1)
 def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mcp, debug, quiet, cli_choice, yes, prompt):
     """AIDA CLI Launcher - AI-Driven Security Assessment
@@ -426,7 +426,7 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
     
     permission_mode = permission_mode or os.getenv("AIDA_PERMISSION_MODE", DEFAULT_PERMISSION)
     backend_url = os.getenv("BACKEND_API_URL", DEFAULT_BACKEND)
-    db_url = os.getenv("DATABASE_URL", "postgresql://aida:aida@localhost:5432/aida_assessments")
+    db_url = os.getenv("DATABASE_URL", "postgresql://aida:aida@localhost:5434/aida_assessments")
     
     # Interactive assessment selection if none provided
     if not assessment:
@@ -448,7 +448,7 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
                 if not assessments:
                     console.print("[yellow]No assessments found![/yellow]\n")
                     console.print("Create your first assessment:")
-                    console.print("  → Open [link=http://localhost:5173]http://localhost:5173[/link]")
+                    console.print("  → Open [link=http://localhost:5174]http://localhost:5174[/link]")
                     console.print('  → Click "New Assessment"\n')
                     sys.exit(1)
                 
@@ -617,9 +617,9 @@ The assessment workspace is ready. Use your standard tools to work with files an
         if api_key:
             env["ANTHROPIC_AUTH_TOKEN"] = api_key
 
-        # Handle --yes flag for Claude (maps to accept permission mode)
+        # Handle --yes flag for Claude (maps to auto permission mode)
         if yes and permission_mode == DEFAULT_PERMISSION:
-            cli_args[cli_args.index("--permission-mode") + 1] = "accept"
+            cli_args[cli_args.index("--permission-mode") + 1] = "auto"
 
         cli_name = "Claude Code"
 

@@ -28,14 +28,14 @@ class AidaMCPService:
     def __init__(self, backend_url: str = None):
         # Load backend URL from environment or use default
         import os
-        self.backend_url = backend_url or os.getenv("BACKEND_API_URL", "http://localhost:8000/api")
+        self.backend_url = backend_url or os.getenv("BACKEND_API_URL", "http://localhost:8001/api")
         self.current_assessment_id: Optional[int] = None
         self.current_assessment_name: Optional[str] = None
         self.http_client: Optional[httpx.AsyncClient] = None
 
         # Docker/Container management
         self.current_container: Optional[str] = None
-        self.claude_container_name: str = os.getenv("DEFAULT_CONTAINER_NAME", "aida-pentest")
+        self.claude_container_name: str = os.getenv("DEFAULT_CONTAINER_NAME", "aida-test-pentest")
         self.containers_cache: List[Dict[str, Any]] = []
         self.cache_timestamp: float = 0
         self.cache_ttl: int = 30

@@ -57,6 +57,26 @@ async def get_async_db():
 
 def init_db():
     """
-    Initialize database (create all tables)
+    Initialize database via Alembic migrations, then ensure any new
+    models not yet covered by migrations are created via create_all().
     """
+    try:
+        from alembic.config import Config
+        from alembic import command
+        import os
+
+        # Locate alembic.ini relative to this file
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        alembic_ini = os.path.join(backend_dir, "alembic.ini")
+
+        if os.path.exists(alembic_ini):
+            alembic_cfg = Config(alembic_ini)
+            alembic_cfg.set_main_option("script_location", os.path.join(backend_dir, "alembic"))
+            alembic_cfg.set_main_option("sqlalchemy.url", str(settings.DATABASE_URL))
+            command.upgrade(alembic_cfg, "head")
+    except Exception:
+        pass
+
+    # Always run create_all to pick up new models not yet in migrations.
+    # create_all is safe: it only creates tables that don't already exist.
     Base.metadata.create_all(bind=engine)

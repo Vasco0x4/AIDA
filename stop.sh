@@ -22,6 +22,15 @@ section() { echo -e "\n${BLUE}════════════════�
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Docker Compose: prefer plugin, fallback to standalone (Kali)
+if docker compose version &>/dev/null; then
+    COMPOSE_CMD="docker compose"
+elif command -v docker-compose &>/dev/null; then
+    COMPOSE_CMD="docker-compose"
+else
+    COMPOSE_CMD="docker compose"
+fi
+
 section "AIDA - Stopping Services"
 
 # Stop folder opener
@@ -30,8 +39,8 @@ if pkill -f "folder_opener.py" 2>/dev/null; then
 fi
 
 # Check current state
-RUNNING=$(docker compose ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
-STOPPED=$(docker compose ps --status exited -q 2>/dev/null | wc -l | tr -d ' ')
+RUNNING=$($COMPOSE_CMD ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+STOPPED=$($COMPOSE_CMD ps --status exited -q 2>/dev/null | wc -l | tr -d ' ')
 TOTAL=$((RUNNING + STOPPED))
 
 if [[ "$TOTAL" -eq 0 ]]; then
@@ -43,18 +52,18 @@ fi
 
 if [[ "$RUNNING" -eq 0 ]]; then
     warn "Containers already stopped"
-    docker compose ps --format "table {{.Name}}\t{{.Status}}"
+    $COMPOSE_CMD ps --format "table {{.Name}}\t{{.Status}}"
     exit 0
 fi
 
 # Stop containers
 log "Stopping $RUNNING container(s)..."
-docker compose stop
+$COMPOSE_CMD stop
 
 # Verify
 echo ""
 log "All containers stopped"
-docker compose ps --format "table {{.Name}}\t{{.Status}}"
+$COMPOSE_CMD ps --format "table {{.Name}}\t{{.Status}}"
 echo ""
 log "Data preserved. To restart: ./start.sh"
 echo ""

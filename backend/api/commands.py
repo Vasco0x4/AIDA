@@ -4,7 +4,7 @@ Command execution and history API endpoints
 from typing import List, Optional
 import re
 import base64
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
@@ -13,6 +13,7 @@ from database import get_db, get_async_db
 from models import CommandHistory, Assessment, Credential
 from schemas.command import CommandExecute, PythonExecRequest, HttpRequestRequest, CommandResponse, CommandsPaginatedResponse, CommandWithAssessmentResponse
 from services.container_service import ContainerService
+from middleware.rate_limit import limiter
 
 # Router for assessment-specific commands
 router = APIRouter(prefix="/assessments/{assessment_id}/commands", tags=["commands"])
@@ -112,7 +113,9 @@ async def get_command(
 
 
 @router.post("/execute", response_model=CommandResponse)
+@limiter.limit("30/minute")
 async def execute_command(
+    request: Request,
     assessment_id: int,
     command_data: CommandExecute,
     db: AsyncSession = Depends(get_async_db)
