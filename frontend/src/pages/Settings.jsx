@@ -15,10 +15,12 @@ import {
   Save,
   Moon,
   Sun,
-  FolderOpen
+  FolderOpen,
+  Bell,
 } from '../components/icons';
 import apiClient from '../services/api';
 import workspaceService from '../services/workspaceService';
+import notificationService from '../services/notificationService';
 import { useTheme } from '../contexts/ThemeContext';
 
 const Settings = () => {
@@ -523,9 +525,148 @@ const Settings = () => {
     return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
   };
 
+  // Notifications state
+  const [notifConfigs, setNotifConfigs] = useState([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifTesting, setNotifTesting] = useState('');
+  const [notifMessage, setNotifMessage] = useState(null);
+  // Telegram
+  const [tgEnabled, setTgEnabled] = useState(false);
+  const [tgBotToken, setTgBotToken] = useState('');
+  const [tgChatId, setTgChatId] = useState('');
+  const [tgOnCritical, setTgOnCritical] = useState(true);
+  const [tgOnHigh, setTgOnHigh] = useState(true);
+  const [tgOnScan, setTgOnScan] = useState(false);
+  // Slack
+  const [slackEnabled, setSlackEnabled] = useState(false);
+  const [slackWebhook, setSlackWebhook] = useState('');
+  const [slackOnCritical, setSlackOnCritical] = useState(true);
+  const [slackOnHigh, setSlackOnHigh] = useState(true);
+  const [slackOnScan, setSlackOnScan] = useState(false);
+  // Email
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [emailSmtpHost, setEmailSmtpHost] = useState('');
+  const [emailSmtpPort, setEmailSmtpPort] = useState(587);
+  const [emailUsername, setEmailUsername] = useState('');
+  const [emailPassword, setEmailPassword] = useState('');
+  const [emailFrom, setEmailFrom] = useState('');
+  const [emailTo, setEmailTo] = useState('');
+  const [emailEncryption, setEmailEncryption] = useState('starttls'); // none, starttls, ssl
+  const [emailSubject, setEmailSubject] = useState('AIDA Security Alert');
+  const [emailOnCritical, setEmailOnCritical] = useState(true);
+  const [emailOnHigh, setEmailOnHigh] = useState(true);
+  const [emailOnScan, setEmailOnScan] = useState(false);
+
+  useEffect(() => {
+    if (activeTab === 'notifications') loadNotifConfigs();
+  }, [activeTab]);
+
+  const loadNotifConfigs = async () => {
+    setNotifLoading(true);
+    try {
+      const configs = await notificationService.listConfigs();
+      setNotifConfigs(configs);
+      configs.forEach(cfg => {
+        if (cfg.channel === 'telegram') {
+          setTgEnabled(cfg.enabled);
+          setTgBotToken(cfg.config?.bot_token || '');
+          setTgChatId(cfg.config?.chat_id || '');
+          setTgOnCritical(cfg.on_critical_finding);
+          setTgOnHigh(cfg.on_high_finding);
+          setTgOnScan(cfg.on_scan_complete);
+        } else if (cfg.channel === 'slack') {
+          setSlackEnabled(cfg.enabled);
+          setSlackWebhook(cfg.config?.webhook_url || '');
+          setSlackOnCritical(cfg.on_critical_finding);
+          setSlackOnHigh(cfg.on_high_finding);
+          setSlackOnScan(cfg.on_scan_complete);
+        } else if (cfg.channel === 'email') {
+          setEmailEnabled(cfg.enabled);
+          setEmailSmtpHost(cfg.config?.smtp_host || '');
+          setEmailSmtpPort(cfg.config?.smtp_port || 587);
+          setEmailUsername(cfg.config?.username || '');
+          setEmailPassword(cfg.config?.password || '');
+          setEmailFrom(cfg.config?.from_email || '');
+          setEmailTo((cfg.config?.to_emails || []).join(', '));
+          setEmailEncryption(cfg.config?.encryption || 'starttls');
+          setEmailSubject(cfg.config?.subject || 'AIDA Security Alert');
+          setEmailOnCritical(cfg.on_critical_finding);
+          setEmailOnHigh(cfg.on_high_finding);
+          setEmailOnScan(cfg.on_scan_complete);
+        }
+      });
+    } catch (e) {
+      // ignore
+    } finally {
+      setNotifLoading(false);
+    }
+  };
+
+  const saveNotifChannel = async (channel) => {
+    setNotifMessage(null);
+    try {
+      let body = {};
+      if (channel === 'telegram') {
+        body = {
+          enabled: tgEnabled,
+          config: { bot_token: tgBotToken, chat_id: tgChatId },
+          on_critical_finding: tgOnCritical,
+          on_high_finding: tgOnHigh,
+          on_scan_complete: tgOnScan,
+        };
+      } else if (channel === 'slack') {
+        body = {
+          enabled: slackEnabled,
+          config: { webhook_url: slackWebhook },
+          on_critical_finding: slackOnCritical,
+          on_high_finding: slackOnHigh,
+          on_scan_complete: slackOnScan,
+        };
+      } else if (channel === 'email') {
+        body = {
+          enabled: emailEnabled,
+          config: {
+            smtp_host: emailSmtpHost,
+            smtp_port: emailSmtpPort,
+            username: emailUsername,
+            password: emailPassword,
+            from_email: emailFrom,
+            to_emails: emailTo.split(',').map(s => s.trim()).filter(Boolean),
+            encryption: emailEncryption,
+            subject: emailSubject,
+          },
+          on_critical_finding: emailOnCritical,
+          on_high_finding: emailOnHigh,
+          on_scan_complete: emailOnScan,
+        };
+      }
+      await notificationService.updateConfig(channel, body);
+      setNotifMessage({ type: 'success', text: `${channel} configuration saved` });
+      setTimeout(() => setNotifMessage(null), 3000);
+    } catch (e) {
+      setNotifMessage({ type: 'error', text: e.response?.data?.detail || 'Failed to save' });
+      setTimeout(() => setNotifMessage(null), 5000);
+    }
+  };
+
+  const testNotifChannel = async (channel) => {
+    setNotifTesting(channel);
+    try {
+      const res = await notificationService.testChannel(channel);
+      setNotifMessage({ type: res.success ? 'success' : 'error', text: res.message });
+      setTimeout(() => setNotifMessage(null), 5000);
+    } catch (e) {
+      setNotifMessage({ type: 'error', text: e.response?.data?.detail || 'Test failed' });
+      setTimeout(() => setNotifMessage(null), 5000);
+    } finally {
+      setNotifTesting('');
+    }
+  };
+
   const tabs = [
     { id: 'general', label: 'General', icon: SettingsIcon },
     { id: 'tools', label: 'Tools', icon: Terminal },
+    { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'about', label: 'About', icon: Info }
   ];
 
@@ -1254,7 +1395,151 @@ const Settings = () => {
           </div>
         )}
 
-        {/* TAB 3: ABOUT */}
+        {/* TAB 3: NOTIFICATIONS */}
+        {activeTab === 'notifications' && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-1">Notification Channels</h2>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">Configure alerts for critical findings and scan completions</p>
+            </div>
+
+            {notifMessage && (
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${notifMessage.type === 'success' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'}`}>
+                {notifMessage.type === 'success' ? <CheckCircle className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
+                <span>{notifMessage.text}</span>
+              </div>
+            )}
+
+            {/* Telegram */}
+            <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">&#9993;</span>
+                  <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Telegram</h3>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" checked={tgEnabled} onChange={e => setTgEnabled(e.target.checked)} className="sr-only peer" />
+                  <div className="w-9 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">Bot Token</label>
+                  <input type="password" value={tgBotToken} onChange={e => setTgBotToken(e.target.value)} placeholder="123456:ABC-DEF..." className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">Chat ID</label>
+                  <input type="text" value={tgChatId} onChange={e => setTgChatId(e.target.value)} placeholder="-100123456789" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-xs">
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={tgOnCritical} onChange={e => setTgOnCritical(e.target.checked)} className="rounded" /> Critical</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={tgOnHigh} onChange={e => setTgOnHigh(e.target.checked)} className="rounded" /> High</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={tgOnScan} onChange={e => setTgOnScan(e.target.checked)} className="rounded" /> Scan Complete</label>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => saveNotifChannel('telegram')} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-colors flex items-center gap-1"><Save className="w-3 h-3" /> Save</button>
+                <button onClick={() => testNotifChannel('telegram')} disabled={notifTesting === 'telegram'} className="px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 transition-colors disabled:opacity-50">
+                  {notifTesting === 'telegram' ? 'Sending...' : 'Test'}
+                </button>
+              </div>
+            </div>
+
+            {/* Slack */}
+            <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">#</span>
+                  <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Slack</h3>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" checked={slackEnabled} onChange={e => setSlackEnabled(e.target.checked)} className="sr-only peer" />
+                  <div className="w-9 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
+                </label>
+              </div>
+              <div>
+                <label className="text-[10px] font-semibold text-neutral-500 uppercase">Webhook URL</label>
+                <input type="url" value={slackWebhook} onChange={e => setSlackWebhook(e.target.value)} placeholder="https://hooks.slack.com/services/..." className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+              </div>
+              <div className="flex items-center gap-4 text-xs">
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={slackOnCritical} onChange={e => setSlackOnCritical(e.target.checked)} className="rounded" /> Critical</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={slackOnHigh} onChange={e => setSlackOnHigh(e.target.checked)} className="rounded" /> High</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={slackOnScan} onChange={e => setSlackOnScan(e.target.checked)} className="rounded" /> Scan Complete</label>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => saveNotifChannel('slack')} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-colors flex items-center gap-1"><Save className="w-3 h-3" /> Save</button>
+                <button onClick={() => testNotifChannel('slack')} disabled={notifTesting === 'slack'} className="px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 transition-colors disabled:opacity-50">
+                  {notifTesting === 'slack' ? 'Sending...' : 'Test'}
+                </button>
+              </div>
+            </div>
+
+            {/* Email */}
+            <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Mail className="w-4 h-4" />
+                  <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Email (SMTP)</h3>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" checked={emailEnabled} onChange={e => setEmailEnabled(e.target.checked)} className="sr-only peer" />
+                  <div className="w-9 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer dark:bg-neutral-700 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">SMTP Host</label>
+                  <input type="text" value={emailSmtpHost} onChange={e => setEmailSmtpHost(e.target.value)} placeholder="smtp.gmail.com" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">SMTP Port</label>
+                  <input type="number" value={emailSmtpPort} onChange={e => setEmailSmtpPort(parseInt(e.target.value) || 587)} className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">Username</label>
+                  <input type="text" value={emailUsername} onChange={e => setEmailUsername(e.target.value)} placeholder="user@gmail.com" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">Password</label>
+                  <input type="password" value={emailPassword} onChange={e => setEmailPassword(e.target.value)} placeholder="App password" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">From Email</label>
+                  <input type="email" value={emailFrom} onChange={e => setEmailFrom(e.target.value)} placeholder="aida@example.com" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">To Emails (comma-separated)</label>
+                  <input type="text" value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="admin@example.com, team@example.com" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">Encryption</label>
+                  <select value={emailEncryption} onChange={e => setEmailEncryption(e.target.value)} className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100">
+                    <option value="none">None (plain)</option>
+                    <option value="starttls">STARTTLS (port 587)</option>
+                    <option value="ssl">SSL/TLS (port 465)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase">Subject</label>
+                  <input type="text" value={emailSubject} onChange={e => setEmailSubject(e.target.value)} placeholder="AIDA Security Alert" className="mt-1 w-full text-xs px-3 py-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100" />
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-xs">
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={emailOnCritical} onChange={e => setEmailOnCritical(e.target.checked)} className="rounded" /> Critical</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={emailOnHigh} onChange={e => setEmailOnHigh(e.target.checked)} className="rounded" /> High</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={emailOnScan} onChange={e => setEmailOnScan(e.target.checked)} className="rounded" /> Scan Complete</label>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => saveNotifChannel('email')} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-colors flex items-center gap-1"><Save className="w-3 h-3" /> Save</button>
+                <button onClick={() => testNotifChannel('email')} disabled={notifTesting === 'email'} className="px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 transition-colors disabled:opacity-50">
+                  {notifTesting === 'email' ? 'Sending...' : 'Test'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: ABOUT */}
         {activeTab === 'about' && (
           <div className="space-y-6">
             {/* System Information */}
@@ -1400,7 +1685,7 @@ const Settings = () => {
                 </a>
 
                 <a
-                  href="http://localhost:8000/docs"
+                  href="http://localhost:8001/docs"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-3 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-700 transition-colors"
@@ -1413,7 +1698,7 @@ const Settings = () => {
                 </a>
 
                 <a
-                  href="http://localhost:8000/redoc"
+                  href="http://localhost:8001/redoc"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-3 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-700 transition-colors"
