@@ -6,11 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from database import init_db
-from api import assessments, cards, recon, sections, containers, folders, global_commands, search, system, credentials, websocket, workspace, pending_commands, context_documents, source_code
+from api import assessments, cards, recon, sections, containers, folders, global_commands, search, system, credentials, websocket, workspace, pending_commands, context_documents, source_code, auth, reports, timeline, notifications, templates
 from api import commands
 from api.commands import global_router as commands_global_router
 from utils.logger import setup_logging, get_logger
 from middleware.logging_middleware import LoggingMiddleware
+from middleware.rate_limit import limiter, rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 # Setup structured logging
 setup_logging(
@@ -32,6 +35,11 @@ app = FastAPI(
     description=settings.PROJECT_TAGLINE
 )
 
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 # Configure logging middleware (before CORS)
 app.add_middleware(LoggingMiddleware)
 
@@ -47,6 +55,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
 app.include_router(assessments.router, prefix=settings.API_V1_PREFIX)
 app.include_router(cards.router, prefix=settings.API_V1_PREFIX)
 app.include_router(recon.router, prefix=settings.API_V1_PREFIX)
@@ -65,6 +74,10 @@ app.include_router(pending_commands.router, prefix=settings.API_V1_PREFIX)  # Pe
 app.include_router(pending_commands.settings_router, prefix=settings.API_V1_PREFIX)  # Command settings
 app.include_router(context_documents.router, prefix=settings.API_V1_PREFIX)  # Context documents
 app.include_router(source_code.router, prefix=settings.API_V1_PREFIX)  # Source code import
+app.include_router(reports.router, prefix=settings.API_V1_PREFIX)  # PDF report generation
+app.include_router(timeline.router, prefix=settings.API_V1_PREFIX)  # Attack timeline
+app.include_router(notifications.router, prefix=settings.API_V1_PREFIX)  # Notifications
+app.include_router(templates.router, prefix=settings.API_V1_PREFIX)  # Assessment templates
 
 
 @app.on_event("startup")

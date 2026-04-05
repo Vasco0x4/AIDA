@@ -68,6 +68,8 @@ import {
   Moon,
   Sun,
   Settings2,
+  Bell,
+  Send,
 } from 'lucide-react';
 
 // Re-export all icons
@@ -138,6 +140,8 @@ export {
   Moon,
   Sun,
   Settings2,
+  Bell,
+  Send,
 };
 
 // Export Logo
