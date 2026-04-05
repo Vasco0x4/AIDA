@@ -11,6 +11,9 @@ from .folder import Folder
 from .platform_settings import PlatformSettings
 from .credential import Credential
 from .pending_command import PendingCommand
+from .user import User
+from .timeline_event import TimelineEvent
+from .notification_config import NotificationConfig
 
 __all__ = [
     "Assessment",
@@ -22,6 +25,9 @@ __all__ = [
     "Folder",
     "PlatformSettings",
     "Credential",
-    "PendingCommand"
+    "PendingCommand",
+    "User",
+    "TimelineEvent",
+    "NotificationConfig",
 ]
 
