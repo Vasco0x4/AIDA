@@ -3,6 +3,16 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Search, Command, X, FileText, Terminal, Shield, Eye, Info, Target, Clock, Filter as FilterIcon } from '../icons';
 import searchService from '../../services/searchService';
 
+const SEVERITY_OPTIONS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+const STATUS_OPTIONS = ['confirmed', 'potential', 'untested'];
+const SEVERITY_COLORS = {
+  CRITICAL: 'bg-red-500 text-white',
+  HIGH: 'bg-orange-500 text-white',
+  MEDIUM: 'bg-yellow-500 text-white',
+  LOW: 'bg-blue-500 text-white',
+  INFO: 'bg-neutral-400 text-white',
+};
+
 const GlobalSearch = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -11,6 +21,12 @@ const GlobalSearch = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [activeFilter, setActiveFilter] = useState('all'); // 'all', 'assessment', 'command', 'finding', 'recon'
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [filterSeverity, setFilterSeverity] = useState([]);
+  const [filterStatus, setFilterStatus] = useState([]);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [searchMeta, setSearchMeta] = useState({ total: 0, execution_time: 0 });
   const navigate = useNavigate();
   const location = useLocation();
   const inputRef = useRef(null);
@@ -26,6 +42,11 @@ const GlobalSearch = () => {
     setGroupedResults({});
     setSelectedIndex(0);
     setActiveFilter('all');
+    setShowAdvanced(false);
+    setFilterSeverity([]);
+    setFilterStatus([]);
+    setDateFrom('');
+    setDateTo('');
   }, []);
 
   // Close on route change
@@ -69,18 +90,28 @@ const GlobalSearch = () => {
     if (!query.trim()) {
       setResults([]);
       setGroupedResults({});
+      setSearchMeta({ total: 0, execution_time: 0 });
       return;
     }
 
     const timeoutId = setTimeout(async () => {
       setIsLoading(true);
       try {
-        // Use new unified search
-        if (activeFilter === 'all') {
-          const searchResults = await searchService.searchAll(query);
-          setResults(searchResults);
+        const hasAdvancedFilters = filterSeverity.length > 0 || filterStatus.length > 0 || dateFrom || dateTo;
 
-          // Group results by type
+        if (hasAdvancedFilters || activeFilter !== 'all') {
+          // Use advanced search with filters
+          const data = await searchService.searchAdvanced(query, {
+            types: activeFilter !== 'all' ? [activeFilter] : undefined,
+            severity: filterSeverity.length > 0 ? filterSeverity : undefined,
+            status: filterStatus.length > 0 ? filterStatus : undefined,
+            dateFrom: dateFrom || undefined,
+            dateTo: dateTo || undefined,
+          });
+          const searchResults = data.results || [];
+          setResults(searchResults);
+          setSearchMeta({ total: data.total || 0, execution_time: data.execution_time || 0 });
+
           const grouped = searchResults.reduce((acc, result) => {
             const type = result.type;
             if (!acc[type]) acc[type] = [];
@@ -89,11 +120,16 @@ const GlobalSearch = () => {
           }, {});
           setGroupedResults(grouped);
         } else {
-          // Filtered search
-          const searchResults = await searchService.searchByType(query, [activeFilter]);
+          const searchResults = await searchService.searchAll(query);
           setResults(searchResults);
+          setSearchMeta({ total: searchResults.length, execution_time: 0 });
 
-          const grouped = { [activeFilter]: searchResults };
+          const grouped = searchResults.reduce((acc, result) => {
+            const type = result.type;
+            if (!acc[type]) acc[type] = [];
+            acc[type].push(result);
+            return acc;
+          }, {});
           setGroupedResults(grouped);
         }
 
@@ -108,7 +144,7 @@ const GlobalSearch = () => {
     }, 300);
 
     return () => clearTimeout(timeoutId);
-  }, [query, activeFilter]);
+  }, [query, activeFilter, filterSeverity, filterStatus, dateFrom, dateTo]);
 
   // Handle keyboard navigation
   useEffect(() => {
@@ -310,7 +346,98 @@ const GlobalSearch = () => {
                 </button>
               );
             })}
+            <div className="flex-1" />
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap ${showAdvanced
+                ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400'
+                : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300'
+              }`}
+            >
+              <FilterIcon className="w-3 h-3" />
+              Filters
+              {(filterSeverity.length > 0 || filterStatus.length > 0 || dateFrom || dateTo) && (
+                <span className="w-1.5 h-1.5 rounded-full bg-primary-500" />
+              )}
+            </button>
           </div>
+
+          {/* Advanced filters panel */}
+          {showAdvanced && (
+            <div className="px-4 py-3 bg-neutral-50 dark:bg-neutral-900/50 border-b border-neutral-200 dark:border-neutral-700 space-y-3">
+              {/* Severity */}
+              <div>
+                <label className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Severity</label>
+                <div className="flex gap-1.5 mt-1 flex-wrap">
+                  {SEVERITY_OPTIONS.map(sev => (
+                    <button
+                      key={sev}
+                      onClick={() => setFilterSeverity(prev => prev.includes(sev) ? prev.filter(s => s !== sev) : [...prev, sev])}
+                      className={`px-2 py-0.5 text-[10px] font-semibold rounded transition-colors ${
+                        filterSeverity.includes(sev)
+                          ? SEVERITY_COLORS[sev]
+                          : 'bg-white dark:bg-neutral-700 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-600'
+                      }`}
+                    >
+                      {sev}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Status</label>
+                <div className="flex gap-1.5 mt-1 flex-wrap">
+                  {STATUS_OPTIONS.map(st => (
+                    <button
+                      key={st}
+                      onClick={() => setFilterStatus(prev => prev.includes(st) ? prev.filter(s => s !== st) : [...prev, st])}
+                      className={`px-2 py-0.5 text-[10px] font-medium rounded capitalize transition-colors ${
+                        filterStatus.includes(st)
+                          ? 'bg-primary-500 text-white'
+                          : 'bg-white dark:bg-neutral-700 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-600'
+                      }`}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Date range */}
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">From</label>
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={e => setDateFrom(e.target.value)}
+                    className="mt-1 w-full text-xs px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">To</label>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={e => setDateTo(e.target.value)}
+                    className="mt-1 w-full text-xs px-2 py-1.5 rounded border border-neutral-200 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
+                  />
+                </div>
+              </div>
+
+              {/* Clear filters */}
+              {(filterSeverity.length > 0 || filterStatus.length > 0 || dateFrom || dateTo) && (
+                <button
+                  onClick={() => { setFilterSeverity([]); setFilterStatus([]); setDateFrom(''); setDateTo(''); }}
+                  className="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                >
+                  Clear all filters
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Results */}
           <div ref={resultsContainerRef} className="max-h-96 overflow-y-auto">
@@ -420,6 +547,9 @@ const GlobalSearch = () => {
           {/* Footer */}
           <div className="px-4 py-2 bg-neutral-50 dark:bg-neutral-900/50 border-t border-neutral-200 dark:border-neutral-700 flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
             <div className="flex items-center gap-4">
+              {searchMeta.total > 0 && (
+                <span>{searchMeta.total} results{searchMeta.execution_time > 0 ? ` in ${searchMeta.execution_time}s` : ''}</span>
+              )}
               <span className="flex items-center gap-1">
                 <kbd className="px-1.5 py-0.5 bg-white dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 dark:text-neutral-200 rounded font-mono">↑↓</kbd>
                 Navigate

@@ -33,4 +33,8 @@ class SearchRequest(BaseModel):
     query: str
     types: Optional[List[str]] = None  # Filter by types
     assessment_id: Optional[int] = None  # Filter by assessment
+    severity: Optional[List[str]] = None  # Filter by severity: CRITICAL, HIGH, MEDIUM, LOW, INFO
+    status: Optional[List[str]] = None  # Filter by status: confirmed, potential, untested
+    date_from: Optional[str] = None  # ISO date string
+    date_to: Optional[str] = None  # ISO date string
     limit: int = 50

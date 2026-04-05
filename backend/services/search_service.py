@@ -21,35 +21,50 @@ class SearchService:
         query: str,
         types: Optional[List[str]] = None,
         assessment_id: Optional[int] = None,
+        severity: Optional[List[str]] = None,
+        status: Optional[List[str]] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         limit: int = 50
     ) -> List[SearchResult]:
         """
-        Unified search across all entities with scoring and ranking
-
-        Args:
-            query: Search query
-            types: Filter by entity types (assessment, command, finding, recon)
-            assessment_id: Filter by specific assessment
-            limit: Maximum results to return
-
-        Returns:
-            List of SearchResult sorted by relevance score
+        Unified search across all entities with scoring, ranking, and advanced filters.
         """
         results = []
         query_lower = query.lower()
 
+        # Parse date filters
+        from_dt = None
+        to_dt = None
+        if date_from:
+            try:
+                from_dt = datetime.fromisoformat(date_from)
+            except ValueError:
+                pass
+        if date_to:
+            try:
+                to_dt = datetime.fromisoformat(date_to)
+            except ValueError:
+                pass
+
         # Search in each entity type if not filtered
         if not types or 'assessment' in types:
-            results.extend(self._search_assessments(query_lower, assessment_id, limit))
+            results.extend(self._search_assessments(query_lower, assessment_id, limit, from_dt, to_dt))
 
         if not types or 'command' in types:
-            results.extend(self._search_commands(query_lower, assessment_id, limit))
+            results.extend(self._search_commands(query_lower, assessment_id, limit, from_dt, to_dt))
 
-        if not types or any(t in ['finding', 'observation', 'info'] for t in types):
-            results.extend(self._search_cards(query_lower, assessment_id, limit, types))
+        if not types or any(t in ['finding', 'observation', 'info'] for t in (types or [])):
+            results.extend(self._search_cards(query_lower, assessment_id, limit, types, severity, status, from_dt, to_dt))
 
         if not types or 'recon' in types:
-            results.extend(self._search_recon(query_lower, assessment_id, limit))
+            results.extend(self._search_recon(query_lower, assessment_id, limit, from_dt, to_dt))
+
+        # Post-filter by severity/status for non-card results (cards already filtered in query)
+        if severity:
+            results = [r for r in results if r.type not in ('finding', 'observation', 'info') or (r.metadata and r.metadata.get('severity') in severity)]
+        if status:
+            results = [r for r in results if r.type not in ('finding', 'observation', 'info') or (r.metadata and r.metadata.get('status') in status)]
 
         # Sort by score (descending) and take top results
         results.sort(key=lambda x: x.score, reverse=True)
@@ -117,7 +132,9 @@ class SearchService:
         self,
         query: str,
         assessment_id: Optional[int],
-        limit: int
+        limit: int,
+        from_dt: Optional[datetime] = None,
+        to_dt: Optional[datetime] = None,
     ) -> List[SearchResult]:
         """Search in assessments"""
         query_filter = or_(
@@ -131,6 +148,10 @@ class SearchService:
 
         if assessment_id:
             q = q.filter(Assessment.id == assessment_id)
+        if from_dt:
+            q = q.filter(Assessment.created_at >= from_dt)
+        if to_dt:
+            q = q.filter(Assessment.created_at <= to_dt)
 
         assessments = q.limit(limit * 2).all()  # Get more for scoring
 
@@ -171,7 +192,9 @@ class SearchService:
         self,
         query: str,
         assessment_id: Optional[int],
-        limit: int
+        limit: int,
+        from_dt: Optional[datetime] = None,
+        to_dt: Optional[datetime] = None,
     ) -> List[SearchResult]:
         """Search in commands with assessment name"""
         query_filter = or_(
@@ -192,6 +215,10 @@ class SearchService:
 
         if assessment_id:
             q = q.filter(CommandHistory.assessment_id == assessment_id)
+        if from_dt:
+            q = q.filter(CommandHistory.created_at >= from_dt)
+        if to_dt:
+            q = q.filter(CommandHistory.created_at <= to_dt)
 
         commands = q.limit(limit * 2).all()
 
@@ -233,7 +260,11 @@ class SearchService:
         query: str,
         assessment_id: Optional[int],
         limit: int,
-        types: Optional[List[str]] = None
+        types: Optional[List[str]] = None,
+        severity: Optional[List[str]] = None,
+        status: Optional[List[str]] = None,
+        from_dt: Optional[datetime] = None,
+        to_dt: Optional[datetime] = None,
     ) -> List[SearchResult]:
         """Search in cards (findings, observations, info)"""
         query_filter = or_(
@@ -266,6 +297,14 @@ class SearchService:
 
         if assessment_id:
             q = q.filter(Card.assessment_id == assessment_id)
+        if severity:
+            q = q.filter(Card.severity.in_(severity))
+        if status:
+            q = q.filter(Card.status.in_(status))
+        if from_dt:
+            q = q.filter(Card.created_at >= from_dt)
+        if to_dt:
+            q = q.filter(Card.created_at <= to_dt)
 
         cards = q.limit(limit * 2).all()
 
@@ -312,7 +351,9 @@ class SearchService:
         self,
         query: str,
         assessment_id: Optional[int],
-        limit: int
+        limit: int,
+        from_dt: Optional[datetime] = None,
+        to_dt: Optional[datetime] = None,
     ) -> List[SearchResult]:
         """Search in recon data"""
         query_filter = or_(
@@ -332,6 +373,10 @@ class SearchService:
 
         if assessment_id:
             q = q.filter(ReconData.assessment_id == assessment_id)
+        if from_dt:
+            q = q.filter(ReconData.created_at >= from_dt)
+        if to_dt:
+            q = q.filter(ReconData.created_at <= to_dt)
 
         recon_items = q.limit(limit * 2).all()
 

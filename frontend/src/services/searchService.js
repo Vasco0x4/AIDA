@@ -47,6 +47,28 @@ class SearchService {
   }
 
   /**
+   * Advanced search with severity, status, and date filters
+   */
+  async searchAdvanced(query, { types, severity, status, dateFrom, dateTo } = {}) {
+    if (!query.trim()) return { results: [], total: 0, execution_time: 0 };
+
+    try {
+      const params = { q: query, limit: 50 };
+      if (types) params.types = Array.isArray(types) ? types.join(',') : types;
+      if (severity && severity.length) params.severity = severity.join(',');
+      if (status && status.length) params.status = status.join(',');
+      if (dateFrom) params.date_from = dateFrom;
+      if (dateTo) params.date_to = dateTo;
+
+      const response = await apiClient.get('/search', { params });
+      return response.data;
+    } catch (error) {
+      console.error('Search error:', error);
+      return { results: [], total: 0, execution_time: 0 };
+    }
+  }
+
+  /**
    * Get grouped results
    */
   async searchGrouped(query) {

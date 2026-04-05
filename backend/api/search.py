@@ -18,23 +18,17 @@ async def search(
     q: str = Query(..., min_length=1, description="Search query"),
     types: Optional[str] = Query(None, description="Comma-separated types: assessment,command,finding,observation,info,recon"),
     assessment_id: Optional[int] = Query(None, description="Filter by assessment ID"),
+    severity: Optional[str] = Query(None, description="Comma-separated severities: CRITICAL,HIGH,MEDIUM,LOW,INFO"),
+    status: Optional[str] = Query(None, description="Comma-separated statuses: confirmed,potential,untested"),
+    date_from: Optional[str] = Query(None, description="Start date (ISO format)"),
+    date_to: Optional[str] = Query(None, description="End date (ISO format)"),
     limit: int = Query(50, ge=1, le=100, description="Maximum results"),
     db: Session = Depends(get_db)
 ):
     """
     Unified search endpoint across all entities
 
-    This endpoint provides fast, intelligent search with:
-    - Single query instead of multiple API calls
-    - Fuzzy matching for typo tolerance
-    - Relevance scoring
-    - Results grouped by type
-    - Recency boost
-
-    Example queries:
-    - /search?q=nmap
-    - /search?q=sql injection&types=finding,observation
-    - /search?q=command&assessment_id=1
+    Supports filtering by severity, status, and date range in addition to text search.
     """
     start_time = time.time()
 
@@ -43,12 +37,24 @@ async def search(
     if types:
         type_list = [t.strip() for t in types.split(',')]
 
+    severity_list = None
+    if severity:
+        severity_list = [s.strip().upper() for s in severity.split(',')]
+
+    status_list = None
+    if status:
+        status_list = [s.strip() for s in status.split(',')]
+
     # Execute search
     search_service = SearchService(db)
     results = search_service.search_all(
         query=q,
         types=type_list,
         assessment_id=assessment_id,
+        severity=severity_list,
+        status=status_list,
+        date_from=date_from,
+        date_to=date_to,
         limit=limit
     )
 
