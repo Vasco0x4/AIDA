@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Target, Server, Shield, ArrowLeft, AlertTriangle, Info, Eye, TrendingUp, Filter, FolderOpen, RefreshCw, FileText } from '../components/icons';
+import { Target, Server, Shield, ArrowLeft, AlertTriangle, Info, Eye, TrendingUp, Filter, FolderOpen, RefreshCw, FileText, Plus } from '../components/icons';
 import apiClient from '../services/api';
 import workspaceService from '../services/workspaceService';
 import EditableField from '../components/common/EditableField';
@@ -19,6 +19,23 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { getSeverityBarClass, SEVERITY_ORDER } from '../utils/severity';
 import { PHASE_NAMES } from '../utils/phases';
 
+// Group order: findings first, then observations, then info
+const CARD_TYPE_ORDER = { finding: 3, observation: 2, info: 1 };
+
+// Sort: card type group → CVSS score desc → severity → creation date desc
+const sortByScore = (a, b) => {
+  const aType = CARD_TYPE_ORDER[a.card_type] || 0;
+  const bType = CARD_TYPE_ORDER[b.card_type] || 0;
+  if (aType !== bType) return bType - aType;
+  const aScore = a.cvss_score ?? -1;
+  const bScore = b.cvss_score ?? -1;
+  if (aScore !== bScore) return bScore - aScore;
+  const aOrder = SEVERITY_ORDER[a.severity] || 0;
+  const bOrder = SEVERITY_ORDER[b.severity] || 0;
+  if (aOrder !== bOrder) return bOrder - aOrder;
+  return new Date(b.created_at) - new Date(a.created_at);
+};
+
 const AssessmentDetail = () => {
   const { id } = useParams();
   const [assessment, setAssessment] = useState(null);
@@ -30,6 +47,7 @@ const AssessmentDetail = () => {
   const [loading, setLoading] = useState(true);
   const [activePhase, setActivePhase] = useState(1); // Phase 1 par défaut
   const [cardFilter, setCardFilter] = useState('overview'); // Filter for cards view
+  const [addCardTrigger, setAddCardTrigger] = useState(0);
   const [showImportModal, setShowImportModal] = useState(false);
   const [openingWorkspace, setOpeningWorkspace] = useState(false);
   const [showChangeContainerModal, setShowChangeContainerModal] = useState(false);
@@ -246,25 +264,35 @@ const AssessmentDetail = () => {
 
   // Filter cards based on selected filter
   const filteredCards = useMemo(() => {
+    let result;
     switch (cardFilter) {
       case 'findings':
-        return cards.filter(c => c.card_type === 'finding');
+        result = cards.filter(c => c.card_type === 'finding');
+        break;
       case 'observations':
-        return cards.filter(c => c.card_type === 'observation');
+        result = cards.filter(c => c.card_type === 'observation');
+        break;
       case 'info':
-        return cards.filter(c => c.card_type === 'info');
+        result = cards.filter(c => c.card_type === 'info');
+        break;
       case 'critical':
-        return cards.filter(c => c.severity === 'CRITICAL');
+        result = cards.filter(c => c.severity === 'CRITICAL');
+        break;
       case 'high':
-        return cards.filter(c => c.severity === 'HIGH');
+        result = cards.filter(c => c.severity === 'HIGH');
+        break;
       case 'medium':
-        return cards.filter(c => c.severity === 'MEDIUM');
+        result = cards.filter(c => c.severity === 'MEDIUM');
+        break;
       case 'low':
-        return cards.filter(c => c.severity === 'LOW');
+        result = cards.filter(c => c.severity === 'LOW');
+        break;
       case 'overview':
       default:
-        return cards;
+        result = cards;
+        break;
     }
+    return [...result].sort(sortByScore);
   }, [cards, cardFilter]);
 
   // Calculate risk distribution percentages
@@ -533,12 +561,15 @@ const AssessmentDetail = () => {
         <h2 className="text-sm font-semibold text-gray-800 dark:text-neutral-100">Reconnaissance Data</h2>
         <div className="space-y-3">
           {/* Render categories in pairs (2 columns) */}
-          {reconCategories.reduce((pairs, category, index) => {
-            if (index % 2 === 0) {
-              pairs.push(reconCategories.slice(index, index + 2));
-            }
-            return pairs;
-          }, []).map((pair, pairIndex) => (
+          {[...reconCategories]
+            .sort((a, b) =>
+              reconData.filter(i => i.data_type === b).length -
+              reconData.filter(i => i.data_type === a).length
+            )
+            .reduce((pairs, category, index, sorted) => {
+              if (index % 2 === 0) pairs.push(sorted.slice(index, index + 2));
+              return pairs;
+            }, []).map((pair, pairIndex) => (
             <div key={pairIndex} className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {pair.map(category => (
                 <ReconTable
@@ -558,7 +589,16 @@ const AssessmentDetail = () => {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-neutral-100">Cards & Findings</h2>
-          <span className="text-sm text-neutral-500 dark:text-neutral-400">{filteredCards.length} cards</span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-neutral-500 dark:text-neutral-400">{filteredCards.length} cards</span>
+            <button
+              onClick={() => setAddCardTrigger(t => t + 1)}
+              className="px-3 py-1.5 bg-primary-600 dark:bg-primary-700 text-white rounded-lg text-xs font-medium hover:bg-primary-700 dark:hover:bg-primary-600 transition-colors flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Card
+            </button>
+          </div>
         </div>
 
         {/* Compact horizontal filter bar - Single row */}
@@ -665,11 +705,11 @@ const AssessmentDetail = () => {
         <div className="w-full">
           {/* Content based on filter */}
           {cardFilter === 'overview' ? (
-            <div className="space-y-6">
+            <div className="space-y-4">
               {/* Risk Distribution */}
               <div>
-                <h3 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4 flex items-center gap-2">
-                  <Target className="w-5 h-5 text-primary-500" />
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-4 flex items-center gap-2">
+                  <Target className="w-4 h-4 text-primary-500" />
                   Risk Distribution
                 </h3>
 
@@ -678,127 +718,84 @@ const AssessmentDetail = () => {
                     {/* Visual Bar Chart */}
                     <div className="flex h-8 bg-neutral-100 dark:bg-neutral-700 rounded-lg overflow-hidden">
                       {riskDistribution.critical > 0 && (
-                        <div
-                          className={`${getSeverityBarClass('CRITICAL')} flex items-center justify-center text-white text-xs font-medium`}
-                          style={{ width: `${riskDistribution.critical}%` }}
-                        >
+                        <div className={`${getSeverityBarClass('CRITICAL')} flex items-center justify-center text-white text-xs font-medium`} style={{ width: `${riskDistribution.critical}%` }}>
                           {riskDistribution.critical}%
                         </div>
                       )}
                       {riskDistribution.high > 0 && (
-                        <div
-                          className={`${getSeverityBarClass('HIGH')} flex items-center justify-center text-white text-xs font-medium`}
-                          style={{ width: `${riskDistribution.high}%` }}
-                        >
+                        <div className={`${getSeverityBarClass('HIGH')} flex items-center justify-center text-white text-xs font-medium`} style={{ width: `${riskDistribution.high}%` }}>
                           {riskDistribution.high}%
                         </div>
                       )}
                       {riskDistribution.medium > 0 && (
-                        <div
-                          className={`${getSeverityBarClass('MEDIUM')} flex items-center justify-center text-white text-xs font-medium`}
-                          style={{ width: `${riskDistribution.medium}%` }}
-                        >
+                        <div className={`${getSeverityBarClass('MEDIUM')} flex items-center justify-center text-white text-xs font-medium`} style={{ width: `${riskDistribution.medium}%` }}>
                           {riskDistribution.medium}%
                         </div>
                       )}
                       {riskDistribution.low > 0 && (
-                        <div
-                          className={`${getSeverityBarClass('LOW')} flex items-center justify-center text-white text-xs font-medium`}
-                          style={{ width: `${riskDistribution.low}%` }}
-                        >
+                        <div className={`${getSeverityBarClass('LOW')} flex items-center justify-center text-white text-xs font-medium`} style={{ width: `${riskDistribution.low}%` }}>
                           {riskDistribution.low}%
                         </div>
                       )}
                     </div>
 
-                    {/* Legend */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                      {stats.critical > 0 && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-red-500 rounded"></div>
-                          <span className="text-sm text-neutral-600 dark:text-neutral-300">
-                            Critical: {stats.critical} ({riskDistribution.critical}%)
-                          </span>
-                        </div>
-                      )}
-                      {stats.high > 0 && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-orange-500 rounded"></div>
-                          <span className="text-sm text-neutral-600 dark:text-neutral-300">
-                            High: {stats.high} ({riskDistribution.high}%)
-                          </span>
-                        </div>
-                      )}
-                      {stats.medium > 0 && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-yellow-500 rounded"></div>
-                          <span className="text-sm text-neutral-600 dark:text-neutral-300">
-                            Medium: {stats.medium} ({riskDistribution.medium}%)
-                          </span>
-                        </div>
-                      )}
-                      {stats.low > 0 && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-blue-500 rounded"></div>
-                          <span className="text-sm text-neutral-600 dark:text-neutral-300">
-                            Low: {stats.low} ({riskDistribution.low}%)
-                          </span>
-                        </div>
-                      )}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-neutral-500 dark:text-neutral-400">
+                    <Shield className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-600" />
+                    <p className="text-sm">No findings yet</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Findings */}
+              <CardsTable
+                cards={filteredCards.filter(c => c.card_type === 'finding')}
+                assessmentId={id}
+                onUpdate={loadAssessment}
+                hideAddButton
+                externalTrigger={addCardTrigger}
+              />
+
+              {/* Divider — Observations & Info */}
+              {(stats.observations + stats.infos) > 0 && (
+                <>
+                  <div className="relative my-1">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-neutral-200 dark:border-neutral-700" />
+                    </div>
+                    <div className="relative flex justify-center">
+                      <span className="px-3 bg-white dark:bg-neutral-900 text-xs text-neutral-400 dark:text-neutral-500 font-medium uppercase tracking-wider">
+                        Observations & Info
+                      </span>
                     </div>
                   </div>
-                ) : (
-                  <div className="text-center py-8 text-neutral-500 dark:text-neutral-400">
-                    <Shield className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-600" />
-                    <p className="text-sm">No findings yet</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Findings List */}
-              <div>
-                <h3 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100 mb-4 flex items-center gap-2">
-                  <AlertTriangle className="w-5 h-5 text-primary-500" />
-                  Findings ({stats.findings})
-                </h3>
-
-                {stats.findings > 0 ? (
                   <CardsTable
-                    cards={cards
-                      .filter(c => c.card_type === 'finding')
-                      .sort((a, b) => {
-                        const aOrder = SEVERITY_ORDER[a.severity] || 0;
-                        const bOrder = SEVERITY_ORDER[b.severity] || 0;
-                        if (aOrder !== bOrder) return bOrder - aOrder;
-                        return new Date(b.created_at) - new Date(a.created_at);
-                      })
-                    }
+                    cards={filteredCards.filter(c => c.card_type === 'observation' || c.card_type === 'info')}
                     assessmentId={id}
                     onUpdate={loadAssessment}
+                    hideAddButton
                   />
-                ) : (
-                  <div className="text-center py-8 text-neutral-500 dark:text-neutral-400">
-                    <Shield className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-600" />
-                    <p className="text-sm">No findings yet</p>
-                  </div>
-                )}
-              </div>
+                </>
+              )}
+
+              {stats.totalCards === 0 && (
+                <div className="text-center py-8 text-neutral-500 dark:text-neutral-400">
+                  <Shield className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-600" />
+                  <p className="text-sm">No cards yet</p>
+                </div>
+              )}
             </div>
           ) : (
             /* Filtered view */
             <div>
-              {filteredCards.length === 0 ? (
-                <div className="text-center py-12 text-neutral-500 dark:text-neutral-400">
-                  <Shield className="w-12 h-12 mx-auto mb-3 text-neutral-300 dark:text-neutral-600" />
-                  <p className="text-sm">No cards found for this filter</p>
-                </div>
-              ) : (
-                <CardsTable
-                  cards={filteredCards}
-                  assessmentId={id}
-                  onUpdate={loadAssessment}
-                />
-              )}
+              <CardsTable
+                cards={filteredCards}
+                assessmentId={id}
+                onUpdate={loadAssessment}
+                hideAddButton
+                externalTrigger={addCardTrigger}
+              />
             </div>
           )}
         </div>

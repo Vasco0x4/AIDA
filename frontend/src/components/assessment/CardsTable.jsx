@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Shield, Eye, EyeOff, Info, AlertTriangle, Edit2, Trash2, Plus } from '../icons';
-import { getSeverityBadgeClass } from '../../utils/severity';
+import { getSeverityBadgeClass, getSeverityBarClass, getSeverityTextClass } from '../../utils/severity';
 import UnifiedModal from '../common/UnifiedModal';
 import CvssCalculator from './CvssCalculator';
 import apiClient from '../../services/api';
 
-const CardsTable = ({ cards, assessmentId, onUpdate }) => {
+const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, externalTrigger = 0 }) => {
   const [expandedCards, setExpandedCards] = useState(new Set());
 
   // Modal state for Add/Edit
@@ -84,6 +84,11 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
     });
     setShowModal(true);
   };
+
+  // Open modal when header button triggers it
+  useEffect(() => {
+    if (externalTrigger > 0) openAddModal();
+  }, [externalTrigger]);
 
   // Open Edit modal
   const openEditModal = (card) => {
@@ -166,13 +171,15 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
   if (cards.length === 0) {
     return (
       <div className="text-center py-8 text-sm text-neutral-500 dark:text-neutral-400">
-        <button
-          onClick={openAddModal}
-          className="mb-4 px-4 py-2 bg-primary-600 dark:bg-primary-700 text-white rounded-lg text-sm hover:bg-primary-700 dark:hover:bg-primary-600 transition-colors"
-        >
-          <Plus className="w-4 h-4 inline mr-2" />
-          Add Card
-        </button>
+        {!hideAddButton && (
+          <button
+            onClick={openAddModal}
+            className="mb-4 px-4 py-2 bg-primary-600 dark:bg-primary-700 text-white rounded-lg text-sm hover:bg-primary-700 dark:hover:bg-primary-600 transition-colors"
+          >
+            <Plus className="w-4 h-4 inline mr-2" />
+            Add Card
+          </button>
+        )}
         <p>No cards in this phase</p>
       </div>
     );
@@ -181,15 +188,17 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
   return (
     <>
       <div className="space-y-2">
-        <div className="flex justify-end mb-2">
-          <button
-            onClick={openAddModal}
-            className="px-3 py-1.5 bg-primary-600 dark:bg-primary-700 text-white rounded-lg text-xs hover:bg-primary-700 dark:hover:bg-primary-600 transition-colors flex items-center gap-1"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Card
-          </button>
-        </div>
+        {!hideAddButton && (
+          <div className="flex justify-end mb-2">
+            <button
+              onClick={openAddModal}
+              className="px-3 py-1.5 bg-primary-600 dark:bg-primary-700 text-white rounded-lg text-xs hover:bg-primary-700 dark:hover:bg-primary-600 transition-colors flex items-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Card
+            </button>
+          </div>
+        )}
 
         {cards.map((card) => {
           const isExpanded = expandedCards.has(card.id);
@@ -201,7 +210,16 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
           const isFalsePositive = card.status === 'false_positive';
 
           return (
-            <div key={card.id} id={`card-${card.id}`} className={`border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors ${isFalsePositive ? 'opacity-50' : ''}`}>
+            <div key={card.id} id={`card-${card.id}`} className={`flex border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden bg-white dark:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors ${isFalsePositive ? 'opacity-50' : ''}`}>
+              {/* Left color strip */}
+              <div className={`w-1 flex-shrink-0 ${
+                cardType === 'finding'     ? getSeverityBarClass(severity) :
+                cardType === 'observation' ? 'bg-blue-400' :
+                cardType === 'info'        ? 'bg-green-400' :
+                                            'bg-neutral-300 dark:bg-neutral-600'
+              }`} />
+              {/* Content */}
+              <div className="flex-1 min-w-0">
               {/* Card Row */}
               <div className="w-full px-4 py-3">
                 <div className="flex items-center justify-between">
@@ -223,14 +241,17 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
                       {getCardIcon(cardType, severity)}
                     </div>
 
-                    {/* Severity Badge + CVSS Score */}
+                    {/* CVSS score or severity fallback */}
                     {cardType === 'finding' && (
-                      <span className={`px-2 py-1 text-xs font-medium rounded border ${getSeverityBadgeClass(severity)}`}>
-                        {severity}
-                        {card.cvss_score != null && (
-                          <span className="ml-1 font-mono opacity-80">{card.cvss_score.toFixed(1)}</span>
-                        )}
-                      </span>
+                      card.cvss_score != null ? (
+                        <span className={`text-xs font-mono font-bold tabular-nums ${getSeverityTextClass(severity)}`}>
+                          {card.cvss_score.toFixed(1)}
+                        </span>
+                      ) : (
+                        <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getSeverityBadgeClass(severity)}`}>
+                          {severity}
+                        </span>
+                      )
                     )}
 
                     {/* Card Type */}
@@ -296,17 +317,17 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
                       <div>
                         <h4 className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Technical Analysis</h4>
                         <div className="text-sm text-neutral-600 dark:text-neutral-300 bg-white dark:bg-neutral-800 p-3 rounded border border-neutral-200 dark:border-neutral-700">
-                          <div className="whitespace-pre-wrap">{card.technical_analysis}</div>
+                          <div className="whitespace-pre-wrap break-words">{card.technical_analysis}</div>
                         </div>
                       </div>
                     )}
 
-                    {/* Proof */}
+                    {/* Proof — scrollable code block */}
                     {card.proof && (
                       <div>
                         <h4 className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Proof</h4>
-                        <div className="text-sm text-neutral-600 dark:text-neutral-300 bg-white dark:bg-neutral-800 p-3 rounded border border-neutral-200 dark:border-neutral-700">
-                          <pre className="whitespace-pre-wrap font-mono text-xs">{card.proof}</pre>
+                        <div className="overflow-x-auto bg-white dark:bg-neutral-800 rounded border border-neutral-200 dark:border-neutral-700">
+                          <pre className="p-3 text-xs font-mono text-neutral-600 dark:text-neutral-300 whitespace-pre">{card.proof}</pre>
                         </div>
                       </div>
                     )}
@@ -316,7 +337,7 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
                       <div>
                         <h4 className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Notes</h4>
                         <div className="text-sm text-neutral-600 dark:text-neutral-300 bg-white dark:bg-neutral-800 p-3 rounded border border-neutral-200 dark:border-neutral-700">
-                          <div className="whitespace-pre-wrap">{card.notes}</div>
+                          <div className="whitespace-pre-wrap break-words">{card.notes}</div>
                         </div>
                       </div>
                     )}
@@ -326,7 +347,7 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
                       <div>
                         <h4 className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Context</h4>
                         <div className="text-sm text-neutral-600 dark:text-neutral-300 bg-white dark:bg-neutral-800 p-3 rounded border border-neutral-200 dark:border-neutral-700">
-                          <div className="whitespace-pre-wrap">{card.context}</div>
+                          <div className="whitespace-pre-wrap break-words">{card.context}</div>
                         </div>
                       </div>
                     )}
@@ -375,6 +396,7 @@ const CardsTable = ({ cards, assessmentId, onUpdate }) => {
                   </div>
                 </div>
               )}
+              </div>{/* end content wrapper */}
             </div>
           );
         })}

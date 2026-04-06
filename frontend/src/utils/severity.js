@@ -45,6 +45,20 @@ export const getSeverityBarClass = (severity) => {
 };
 
 /**
+ * Left border strip color — used on card rows
+ */
+export const getSeverityStripClass = (severity) => {
+  switch (severity) {
+    case 'CRITICAL': return 'border-l-red-500';
+    case 'HIGH':     return 'border-l-orange-500';
+    case 'MEDIUM':   return 'border-l-yellow-500';
+    case 'LOW':      return 'border-l-blue-400';
+    case 'INFO':     return 'border-l-cyan-400';
+    default:         return 'border-l-neutral-300 dark:border-l-neutral-600';
+  }
+};
+
+/**
  * Dot color — used in filter buttons and legend dots
  */
 export const getSeverityDotClass = (severity) => {

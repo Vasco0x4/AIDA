@@ -1,7 +1,7 @@
 """
 MCP Tools Definitions - Refactored according to specifications
 - Renamed: start_assessment → load_assessment
-- Removed: list_containers, select_container
+- Added: create_assessment, list_assessments, list_containers
 - Removed: section_number from add_finding, add_observation, add_info
 - Added: 9 new tools (list_*, update_*)
 """
@@ -12,10 +12,10 @@ from mcp.types import Tool
 def get_tool_definitions() -> List[Tool]:
     """Get all MCP tool definitions"""
     return [
-        # ========== Assessment Management (2 tools) ==========
+        # ========== Assessment Management (5 tools) ==========
         Tool(
             name="load_assessment",
-            description="Load an existing assessment to begin work (USER creates assessments via interface, NOT Claude)",
+            description="Load an existing assessment to begin work. Returns full state: scope, phases, cards (findings/observations/info), recon data, credentials, and workspace structure.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -30,6 +30,103 @@ def get_tool_definitions() -> List[Tool]:
                     }
                 },
                 "required": ["name"]
+            }
+        ),
+        Tool(
+            name="create_assessment",
+            description="Create a new pentest assessment and auto-load it. Gather scope, targets, and constraints from the user BEFORE calling this tool.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Assessment name (must be unique)"
+                    },
+                    "client_name": {
+                        "type": "string",
+                        "description": "Client or organization name"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["API", "Website", "External Infra", "Mobile", "Cloud", "General"],
+                        "description": "Assessment category"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "What is in scope (targets, applications, networks)"
+                    },
+                    "limitations": {
+                        "type": "string",
+                        "description": "What is out of scope or restricted"
+                    },
+                    "objectives": {
+                        "type": "string",
+                        "description": "Goals of the assessment"
+                    },
+                    "target_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Target domains (e.g., ['example.com', 'api.example.com'])"
+                    },
+                    "ip_scopes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IP addresses or CIDR ranges in scope (e.g., ['10.0.0.0/24', '192.168.1.100'])"
+                    },
+                    "environment": {
+                        "type": "string",
+                        "enum": ["non_specifie", "production", "dev"],
+                        "description": "Target environment (default: non_specifie)"
+                    },
+                    "environment_notes": {
+                        "type": "string",
+                        "description": "Additional notes about the environment"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date (YYYY-MM-DD format)"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date (YYYY-MM-DD format)"
+                    },
+                    "credentials": {
+                        "type": "string",
+                        "description": "Initial credentials or access information"
+                    },
+                    "access_info": {
+                        "type": "string",
+                        "description": "VPN, jump hosts, or other access details"
+                    }
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="list_assessments",
+            description="List existing assessments. Useful to check what exists before creating a new one or to find an assessment to load.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["active", "completed", "archived"],
+                        "description": "Filter by status (optional, shows all if not specified)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of assessments to return",
+                        "default": 50
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="list_containers",
+            description="List available pentesting containers with their status. No assessment needs to be loaded.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
             }
         ),
         Tool(
@@ -481,21 +578,6 @@ def get_tool_definitions() -> List[Tool]:
                 "required": ["url"]
             }
         ),
-        Tool(
-            name="tool_help",
-            description="Get help documentation for a specific tool (checks availability and shows usage)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "tool": {
-                        "type": "string",
-                        "description": "Name of the tool to get help for"
-                    }
-                },
-                "required": ["tool"]
-            }
-        ),
-
         # ========== Credentials Management (2 tools) ==========
         Tool(
             name="credentials_add",

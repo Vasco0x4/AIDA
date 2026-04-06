@@ -2,7 +2,7 @@
 Pending Command Pydantic schemas
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, ConfigDict
 
 
@@ -48,6 +48,7 @@ class CommandSettingsResponse(BaseModel):
     execution_mode: str  # open, filter, closed
     filter_keywords: List[str]
     timeout_seconds: int = 300  # Default 5 minutes
+    http_method_rules: Dict[str, str] = {}  # method -> "auto_approve" | "require_approval" | "inherit"
 
 
 class CommandSettingsUpdate(BaseModel):
@@ -55,6 +56,7 @@ class CommandSettingsUpdate(BaseModel):
     execution_mode: Optional[str] = None
     filter_keywords: Optional[List[str]] = None
     timeout_seconds: Optional[int] = None
+    http_method_rules: Optional[Dict[str, str]] = None
 
 
 class KeywordAdd(BaseModel):

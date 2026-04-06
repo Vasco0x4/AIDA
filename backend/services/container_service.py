@@ -77,7 +77,7 @@ class ContainerService:
 
         return sanitized
 
-    async def _run_command(self, command: List[str], timeout: float = 10.0) -> Dict[str, Any]:
+    async def _run_command(self, command: List[str], timeout: float = 30.0) -> Dict[str, Any]:
         """Run a system command with a timeout to prevent hangs on docker socket issues"""
         try:
             process = await asyncio.create_subprocess_exec(

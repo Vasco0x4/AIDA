@@ -2,6 +2,7 @@
 Workspace API - Endpoints for opening workspace folders on host filesystem
 """
 from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -377,7 +378,7 @@ async def resolve_workspace_path(
         # Get assessment
         if assessment_name:
             assessment = db.query(Assessment).filter(
-                Assessment.name.ilike(assessment_name.strip())
+                func.trim(Assessment.name).ilike(assessment_name.strip())
             ).first()
         elif assessment_id:
             assessment = db.query(Assessment).filter(

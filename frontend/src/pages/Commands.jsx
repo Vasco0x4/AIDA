@@ -48,9 +48,12 @@ const Commands = () => {
   const [filterKeywords, setFilterKeywords] = useState([]);
   const [newKeyword, setNewKeyword] = useState('');
   const [savingMode, setSavingMode] = useState(false);
+  const [httpMethodRules, setHttpMethodRules] = useState({});
 
   // Approval state
   const [processingId, setProcessingId] = useState(null);
+  const [expandedPendingId, setExpandedPendingId] = useState(null);
+  const [expandedHistoryId, setExpandedHistoryId] = useState(null);
 
   // WebSocket for real-time updates
   const { subscribe } = useWebSocketContext();
@@ -129,6 +132,7 @@ const Commands = () => {
       const settings = await commandSettingsService.getCommandSettings();
       setExecutionMode(settings.execution_mode || 'open');
       setFilterKeywords(settings.filter_keywords || []);
+      setHttpMethodRules(settings.http_method_rules || {});
     } catch (error) {
       // console.error('Failed to load settings:', error);
     }
@@ -280,6 +284,18 @@ const Commands = () => {
     }
   };
 
+  const handleHttpMethodRuleChange = async (method, action) => {
+    const updated = { ...httpMethodRules, [method]: action };
+    // Remove 'inherit' entries to keep the stored object clean
+    if (action === 'inherit') delete updated[method];
+    try {
+      const result = await commandSettingsService.updateHttpMethodRules(updated);
+      setHttpMethodRules(result.http_method_rules || {});
+    } catch (error) {
+      console.error('Failed to update HTTP method rule:', error);
+    }
+  };
+
   // Approval handlers
   const handleApprove = async (commandId) => {
     setProcessingId(commandId);
@@ -335,6 +351,24 @@ const Commands = () => {
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return date.toLocaleDateString();
+  };
+
+  // Smart preview: context around matched keyword, or first line of command
+  const getCommandPreview = (command, matchedKeywords = []) => {
+    if (!command) return '';
+    if (matchedKeywords && matchedKeywords.length > 0) {
+      const kw = matchedKeywords[0];
+      const idx = command.toLowerCase().indexOf(kw.toLowerCase());
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 35);
+        const end = Math.min(command.length, idx + kw.length + 35);
+        return (start > 0 ? '…' : '') + command.slice(start, end) + (end < command.length ? '…' : '');
+      }
+    }
+    const lines = command.split('\n').filter(l => l.trim());
+    const firstLine = lines[0] || command;
+    const truncated = firstLine.length > 80 ? firstLine.substring(0, 80) + '…' : firstLine;
+    return lines.length > 1 ? `${truncated} [+${lines.length - 1}]` : truncated;
   };
 
   const filteredHistory = historyCommands.filter(cmd => {
@@ -559,7 +593,7 @@ const Commands = () => {
                             </span>
                           ) : (
                             <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
-                              {cmd.command.length > 60 ? cmd.command.substring(0, 60) + '...' : cmd.command}
+                              {getCommandPreview(cmd.command)}
                             </code>
                           )}
                         </td>
@@ -587,7 +621,7 @@ const Commands = () => {
                                 ) : cmd.command_type === 'http' ? (
                                   <pre className="block mt-1 p-2 bg-neutral-900 text-blue-300 border border-neutral-700 rounded text-xs font-mono overflow-auto max-h-48 whitespace-pre-wrap">{cmd.source_code}</pre>
                                 ) : (
-                                  <code className="block mt-1 p-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded text-xs font-mono">{cmd.command}</code>
+                                  <pre className="block mt-1 p-2 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded text-xs font-mono whitespace-pre-wrap break-all">{cmd.command}</pre>
                                 )}
                               </div>
                               {cmd.stdout && (
@@ -670,6 +704,35 @@ const Commands = () => {
             </div>
           )}
 
+          {/* HTTP Method Rules */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-neutral-500">HTTP method rules:</span>
+            {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map((method) => {
+              const action = httpMethodRules[method] || 'inherit';
+              return (
+                <div key={method} className="inline-flex items-center border border-neutral-200 dark:border-neutral-700 rounded overflow-hidden text-xs">
+                  <span className="px-2 py-1 bg-neutral-50 dark:bg-neutral-800 font-mono text-neutral-700 dark:text-neutral-300 border-r border-neutral-200 dark:border-neutral-700">{method}</span>
+                  {['auto_approve', 'inherit', 'require_approval'].map((opt) => (
+                    <button
+                      key={opt}
+                      onClick={() => handleHttpMethodRuleChange(method, opt)}
+                      className={`px-2 py-1 transition-colors ${action === opt
+                        ? opt === 'auto_approve'
+                          ? 'bg-green-600 text-white'
+                          : opt === 'require_approval'
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900'
+                        : 'text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                      }`}
+                    >
+                      {opt === 'auto_approve' ? 'allow' : opt === 'require_approval' ? 'ask' : 'mode'}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+
           {/* Approval Sub-tabs */}
           <div className="flex items-center gap-4 border-b border-neutral-200 dark:border-neutral-700">
             <button
@@ -714,41 +777,62 @@ const Commands = () => {
                   </thead>
                   <tbody>
                     {pendingCommands.map((cmd) => (
-                      <tr key={cmd.id} className="group">
-                        <td><div className={`w-2 h-2 rounded-full ${getStatusDot(cmd.status)}`} /></td>
-                        <td>
-                          <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
-                            {cmd.command.length > 50 ? cmd.command.substring(0, 50) + '...' : cmd.command}
-                          </code>
-                        </td>
-                        <td className="text-sm text-neutral-600 dark:text-neutral-400">{cmd.assessment_name}</td>
-                        <td>
-                          {cmd.matched_keywords?.map((kw) => (
-                            <span key={kw} className="mr-1 px-1.5 py-0.5 text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded">{kw}</span>
-                          ))}
-                        </td>
-                        <td className="text-xs text-neutral-500">{formatTime(cmd.created_at)}</td>
-                        <td>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => handleApprove(cmd.id)}
-                              disabled={processingId === cmd.id}
-                              className="p-1.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded"
-                              title="Approve"
-                            >
-                              <Check className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleReject(cmd.id)}
-                              disabled={processingId === cmd.id}
-                              className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
-                              title="Reject"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
+                      <Fragment key={cmd.id}>
+                        <tr
+                          className="group cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+                          onClick={() => setExpandedPendingId(expandedPendingId === cmd.id ? null : cmd.id)}
+                        >
+                          <td><div className={`w-2 h-2 rounded-full ${getStatusDot(cmd.status)}`} /></td>
+                          <td>
+                            <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
+                              {getCommandPreview(cmd.command, cmd.matched_keywords)}
+                            </code>
+                          </td>
+                          <td className="text-sm text-neutral-600 dark:text-neutral-400">{cmd.assessment_name}</td>
+                          <td>
+                            {cmd.matched_keywords?.map((kw) => (
+                              <span key={kw} className="mr-1 px-1.5 py-0.5 text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded">{kw}</span>
+                            ))}
+                          </td>
+                          <td className="text-xs text-neutral-500">{formatTime(cmd.created_at)}</td>
+                          <td>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleApprove(cmd.id); }}
+                                disabled={processingId === cmd.id}
+                                className="p-1.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded"
+                                title="Approve"
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleReject(cmd.id); }}
+                                disabled={processingId === cmd.id}
+                                className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
+                                title="Reject"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                              {expandedPendingId === cmd.id
+                                ? <ChevronDown className="w-3 h-3 text-neutral-400" />
+                                : <ChevronRight className="w-3 h-3 text-neutral-400" />
+                              }
+                            </div>
+                          </td>
+                        </tr>
+                        {expandedPendingId === cmd.id && (
+                          <tr>
+                            <td colSpan="6" className="p-0">
+                              <div className="px-4 py-3 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-700">
+                                <span className="text-xs font-medium text-neutral-400 uppercase mb-1 block">Full Command</span>
+                                <pre className="text-xs font-mono text-neutral-800 dark:text-neutral-200 bg-neutral-900 dark:bg-black p-3 rounded whitespace-pre-wrap break-all max-h-64 overflow-auto">
+                                  {cmd.command}
+                                </pre>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -794,25 +878,47 @@ const Commands = () => {
                     </thead>
                     <tbody>
                       {filteredHistory.map((cmd) => (
-                        <tr key={cmd.id}>
-                          <td><div className={`w-2 h-2 rounded-full ${getStatusDot(cmd.status)}`} /></td>
-                          <td>
-                            <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
-                              {cmd.command.length > 50 ? cmd.command.substring(0, 50) + '...' : cmd.command}
-                            </code>
-                          </td>
-                          <td className="text-sm text-neutral-600 dark:text-neutral-400">{cmd.assessment_name}</td>
-                          <td>
-                            <span className={`text-xs px-2 py-0.5 rounded ${cmd.status === 'executed' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
-                              cmd.status === 'rejected' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
-                                cmd.status === 'timeout' ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300' :
-                                  'bg-neutral-100 text-neutral-600'
-                              }`}>
-                              {getStatusLabel(cmd.status)}
-                            </span>
-                          </td>
-                          <td className="text-xs text-neutral-500">{formatTime(cmd.resolved_at)}</td>
-                        </tr>
+                        <Fragment key={cmd.id}>
+                          <tr
+                            className="cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+                            onClick={() => setExpandedHistoryId(expandedHistoryId === cmd.id ? null : cmd.id)}
+                          >
+                            <td><div className={`w-2 h-2 rounded-full ${getStatusDot(cmd.status)}`} /></td>
+                            <td>
+                              <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
+                                {getCommandPreview(cmd.command)}
+                              </code>
+                            </td>
+                            <td className="text-sm text-neutral-600 dark:text-neutral-400">{cmd.assessment_name}</td>
+                            <td>
+                              <span className={`text-xs px-2 py-0.5 rounded ${cmd.status === 'executed' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                                cmd.status === 'rejected' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
+                                  cmd.status === 'timeout' ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300' :
+                                    'bg-neutral-100 text-neutral-600'
+                                }`}>
+                                {getStatusLabel(cmd.status)}
+                              </span>
+                            </td>
+                            <td className="text-xs text-neutral-500">{formatTime(cmd.resolved_at)}</td>
+                          </tr>
+                          {expandedHistoryId === cmd.id && (
+                            <tr>
+                              <td colSpan="5" className="p-0">
+                                <div className="px-4 py-3 bg-neutral-50 dark:bg-neutral-800/50 border-t border-neutral-100 dark:border-neutral-700">
+                                  <span className="text-xs font-medium text-neutral-400 uppercase mb-1 block">Full Command</span>
+                                  <pre className="text-xs font-mono text-neutral-800 dark:text-neutral-200 bg-neutral-900 dark:bg-black p-3 rounded whitespace-pre-wrap break-all max-h-64 overflow-auto">
+                                    {cmd.command}
+                                  </pre>
+                                  {cmd.rejection_reason && (
+                                    <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+                                      <span className="font-medium">Reason: </span>{cmd.rejection_reason}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>

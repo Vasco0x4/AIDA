@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AIDA CLI Launcher - Professional Python Implementation
-AI-Driven Security Assessment - Intelligent wrapper for Claude Code & Kimi CLI
+AI-Driven Security Assessment - Intelligent wrapper for Claude Code, Kimi CLI & Qwen Code
 """
 import os
 import sys
@@ -100,7 +100,7 @@ DEFAULT_PERMISSION = "default"
 DEFAULT_BACKEND = "http://localhost:8001/api"
 
 # CLI types
-CLIType = Literal["claude", "kimi"]
+CLIType = Literal["claude", "kimi", "qwen"]
 
 
 def ensure_backend_venv(quiet=False) -> Path:
@@ -170,24 +170,6 @@ def ensure_backend_venv(quiet=False) -> Path:
                 console.print(f"[yellow]⚠ Could not verify MCP installation: {e}[/yellow]")
     
     return python_bin
-
-
-def detect_python_bin(quiet=False) -> str:
-    """Detect Python binary (prefer venv) - returns absolute path"""
-    venv_paths = [
-        AIDA_ROOT / "backend" / "venv" / "bin" / "python",
-        AIDA_ROOT / ".venv" / "bin" / "python",
-    ]
-    
-    for path in venv_paths:
-        if path.exists():
-            if not quiet:
-                console.print(f"[dim]✓ Using venv Python: {path.name}[/dim]")
-            return str(path.absolute())  # Return absolute path
-    
-    if not quiet:
-        console.print("[yellow]⚠ Using system python3[/yellow]")
-    return "python3"
 
 
 def check_exegol_installed() -> bool:
@@ -288,17 +270,22 @@ agent:
 
 
 def detect_cli() -> CLIType:
-    """Detect which CLI is available (claude or kimi)"""
+    """Detect which CLI is available (claude, kimi, or qwen)"""
     # Check for Claude
     result = subprocess.run(["which", "claude"], capture_output=True)
     if result.returncode == 0:
         return "claude"
-    
+
     # Check for Kimi
     result = subprocess.run(["which", "kimi"], capture_output=True)
     if result.returncode == 0:
         return "kimi"
-    
+
+    # Check for Qwen
+    result = subprocess.run(["which", "qwen"], capture_output=True)
+    if result.returncode == 0:
+        return "qwen"
+
     return None
 
 
@@ -364,7 +351,7 @@ def show_assessment_not_found(assessment_name: str, backend_url: str):
 
 
 def show_cli_not_found():
-    """Display error when neither Claude nor Kimi CLI is found"""
+    """Display error when neither Claude nor Kimi nor Qwen CLI is found"""
     console.print("[red]✗ No compatible AI CLI found[/red]\n")
     console.print("Please install one of the following:\n")
     console.print("[bold]Claude Code:[/bold]")
@@ -373,6 +360,10 @@ def show_cli_not_found():
     console.print("  [cyan]pip install kimi-cli[/cyan]")
     console.print("  or")
     console.print("  [cyan]uv tool install kimi-cli[/cyan]\n")
+    console.print("[bold]Qwen Code CLI:[/bold]")
+    console.print("  [cyan]npm install -g @qwen-code/qwen-code@latest[/cyan]")
+    console.print("  or")
+    console.print("  [cyan]bash -c \"$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)\"[/cyan]\n")
     sys.exit(1)
 
 
@@ -386,14 +377,14 @@ def show_cli_not_found():
 @click.option("--no-mcp", is_flag=True, help="Disable MCP server")
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.option("-q", "--quiet", is_flag=True, help="Quiet mode (minimal output)")
-@click.option("--cli", "cli_choice", type=click.Choice(["claude", "kimi", "auto"]), default="auto",
+@click.option("--cli", "cli_choice", type=click.Choice(["claude", "kimi", "qwen", "auto"]), default="auto",
               help="Which CLI to use (default: auto-detect)")
-@click.option("-y", "--yes", is_flag=True, help="Auto-approve all actions (Kimi: --yolo, Claude: permission-mode=auto)")
+@click.option("-y", "--yes", is_flag=True, help="Auto-approve all actions (Kimi/Qwen: --yolo, Claude: permission-mode=accept)")
 @click.argument("prompt", nargs=-1)
 def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mcp, debug, quiet, cli_choice, yes, prompt):
     """AIDA CLI Launcher - AI-Driven Security Assessment
-    
-    Supports both Claude Code and Kimi CLI as underlying AI agents.
+
+    Supports Claude Code, Kimi CLI, and Qwen Code CLI as underlying AI agents.
     """
     
     # Clear terminal for clean start
@@ -445,44 +436,45 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
                 
                 assessments = response.json()
                 
-                if not assessments:
-                    console.print("[yellow]No assessments found![/yellow]\n")
-                    console.print("Create your first assessment:")
-                    console.print("  → Open [link=http://localhost:5174]http://localhost:5174[/link]")
-                    console.print('  → Click "New Assessment"\n')
-                    sys.exit(1)
-                
                 # Display selection menu
                 console.print("[bold]Select an assessment:[/bold]\n")
-                
+
                 table = Table(show_header=False, box=None, padding=(0, 2))
                 table.add_column(style="cyan bold", justify="right", width=4)
                 table.add_column()
                 table.add_column(style="dim", no_wrap=True)
-                
-                for i, a in enumerate(assessments, 1):
-                    container = a.get('container_name', 'N/A')
-                    table.add_row(f"{i}.", a['name'], f"({container})")
-                
+
+                if assessments:
+                    for i, a in enumerate(assessments, 1):
+                        container = a.get('container_name', 'N/A')
+                        table.add_row(f"{i}.", a['name'], f"({container})")
+                else:
+                    console.print("[dim]No assessments yet — the AI can create one for you.[/dim]\n")
+
                 console.print(table)
                 console.print()
-                
+
                 # Get user input
                 try:
                     choice = console.input("[bold]Enter number (or 'q' to quit): [/bold]")
-                    
+
                     if choice.lower() == 'q':
                         console.print("\nCancelled.\n")
                         sys.exit(0)
-                    
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(assessments):
-                        assessment = assessments[idx]['name']
-                        console.print(f"\n[green]✓[/green] Selected: [cyan]{assessment}[/cyan]\n")
+
+                    # Empty input or "0" = skip (no assessment, AI can create one)
+                    if choice == '' or choice == '0':
+                        assessment = None
+                        console.print("\n[green]✓[/green] [dim]No assessment selected — AI can create one with create_assessment()[/dim]\n")
                     else:
-                        console.print("\n[red]Invalid selection[/red]\n")
-                        sys.exit(1)
-                        
+                        idx = int(choice) - 1
+                        if 0 <= idx < len(assessments):
+                            assessment = assessments[idx]['name']
+                            console.print(f"\n[green]✓[/green] Selected: [cyan]{assessment}[/cyan]\n")
+                        else:
+                            console.print("\n[red]Invalid selection[/red]\n")
+                            sys.exit(1)
+
                 except (ValueError, KeyboardInterrupt):
                     console.print("\n\nCancelled.\n")
                     sys.exit(0)
@@ -567,10 +559,9 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
         if not quiet and debug:
             console.print(f"[dim]✓ Container: {container_name}[/dim]")
             console.print(f"[dim]✓ Workspace: {workspace_path}[/dim]\n")
-        
-        # For Claude: enhance preprompt with assessment context
-        if cli_type == "claude":
-            preprompt_content += f"""
+
+        # Enhance preprompt with assessment context for all CLI types
+        preprompt_content += f"""
 
 ## **Assessment Loaded**
 
@@ -609,11 +600,10 @@ The assessment workspace is ready. Use your standard tools to work with files an
         # Set API env vars
         env = os.environ.copy()
 
-        # 🔧 FIX: Force disable prompt caching for Vertex AI compatibility
-        env["DISABLE_PROMPT_CACHING"] = "1"
-
         if base_url:
             env["ANTHROPIC_BASE_URL"] = base_url
+            # Disable prompt caching for external API proxies (Vertex AI, etc.)
+            env["DISABLE_PROMPT_CACHING"] = "1"
         if api_key:
             env["ANTHROPIC_AUTH_TOKEN"] = api_key
 
@@ -623,7 +613,7 @@ The assessment workspace is ready. Use your standard tools to work with files an
 
         cli_name = "Claude Code"
 
-    else:  # cli_type == "kimi"
+    elif cli_type == "kimi":
         # Build Kimi CLI command
         # Generate agent file for Kimi
         agent_file = generate_kimi_agent_file(
@@ -659,58 +649,174 @@ The assessment workspace is ready. Use your standard tools to work with files an
         env = os.environ.copy()
 
         cli_name = "Kimi CLI"
-    
+
+    else:  # cli_type == "qwen"
+        # Build Qwen Code CLI command
+        # Qwen uses TWO config files:
+        # 1. .qwen/settings.json - MCP servers, models, API keys
+        # 2. QWEN.md - System prompt (markdown file)
+        # Config can be in workspace (project) or ~/.qwen (global)
+        
+        # Create Qwen settings content
+        def create_qwen_settings():
+            # Determine auth type: use qwen-oauth by default, openai if API key/base URL provided
+            auth_type = "qwen-oauth"
+            if api_key or base_url:
+                auth_type = "openai"
+            
+            settings = {
+                "modelProviders": {
+                    "openai": [
+                        {
+                            "id": explicit_model if explicit_model else "coder-model",
+                            "name": explicit_model if explicit_model else "Qwen Coder",
+                        }
+                    ]
+                },
+                "security": {
+                    "auth": {
+                        "selectedType": auth_type
+                    }
+                }
+            }
+            
+            # Add API key if provided (for openai auth)
+            if api_key:
+                settings["modelProviders"]["openai"][0]["apiKey"] = api_key
+            
+            if base_url:
+                settings["modelProviders"]["openai"][0]["baseUrl"] = base_url
+            
+            # Add MCP server configuration if not disabled
+            if not no_mcp and MCP_SERVER_PATH.exists():
+                try:
+                    python_bin = ensure_backend_venv(quiet=True)
+                    python_bin_str = str(python_bin.absolute())
+                except Exception:
+                    python_bin_str = "python3"
+                
+                settings["mcpServers"] = {
+                    "aida-mcp": {
+                        "command": python_bin_str,
+                        "args": [str(MCP_SERVER_PATH.absolute())],
+                        "env": {
+                            "PYTHONPATH": str((AIDA_ROOT / "backend").absolute()),
+                            "DATABASE_URL": db_url
+                        }
+                    }
+                }
+            
+            return settings
+        
+        qwen_settings = create_qwen_settings()
+
+        # Determine config location
+        # Qwen reads QWEN.md from workspace root, and .qwen/settings.json from workspace
+        workspace_qwen_dir = Path(workspace_path) / ".qwen"
+        
+        # Try to create config in workspace
+        config_dir = None
+        config_location = ""
+        
+        try:
+            workspace_qwen_dir.mkdir(parents=True, exist_ok=True)
+            # Test if we can write to it
+            test_file = workspace_qwen_dir / ".write_test"
+            test_file.write_text("test")
+            test_file.unlink()
+            config_dir = workspace_qwen_dir
+            config_location = "workspace"
+        except (PermissionError, OSError) as e:
+            # Can't write to workspace - this is a critical error
+            # We don't fallback to ~/.qwen/ to avoid cross-assessment config pollution
+            if not quiet:
+                console.print("[red]✗ Cannot write to workspace configuration directory[/red]")
+                console.print(f"[dim]  Error: {e}[/dim]")
+                console.print("\n[yellow]Troubleshooting:[/yellow]")
+                console.print("  • Check workspace permissions:")
+                console.print(f"    [cyan]ls -la {workspace_path}[/cyan]")
+                console.print("  • Fix ownership:")
+                console.print(f"    [cyan]sudo chown -R $USER:$USER {workspace_path}[/cyan]\n")
+            sys.exit(1)
+
+        if not quiet:
+            console.print(f"[dim]✓ Qwen config: {config_location} directory[/dim]")
+            console.print(f"[dim]  Path: {config_dir}[/dim]")
+
+        # Write settings.json
+        settings_file = config_dir / "settings.json"
+        settings_file.write_text(json.dumps(qwen_settings, indent=2))
+
+        # Write QWEN.md at workspace ROOT (not in .qwen/)
+        # Qwen Code reads QWEN.md from project root, like CLAUDE.md for Claude Code
+        qwen_md_file = Path(workspace_path) / "QWEN.md"
+        qwen_md_file.write_text(preprompt_content)
+        
+        if not quiet and debug:
+            console.print(f"[dim]✓ System prompt: {qwen_md_file.name} (workspace root)[/dim]\n")
+
+        # Qwen CLI command
+        cli_args = ["qwen"]
+
+        # Add prompt if provided
+        if prompt:
+            cli_args.extend(["-p", " ".join(prompt)])
+
+        env = os.environ.copy()
+        cli_name = "Qwen Code CLI"
+
     # Display launch banner
     if not quiet:
         console.print()
-        
-        # Main info panel
-        panel_content = f"""[bold cyan]AIDA Security Assessment Assistant[/bold cyan]
 
-[dim]CLI:[/dim]            {cli_name}
-[dim]Permission:[/dim]   {"accept (auto)" if yes else permission_mode if cli_type == "claude" else "interactive"}
-[dim]MCP Server:[/dim]   {"[green]Enabled[/green]" if not no_mcp else "[yellow]Disabled[/yellow]"}
-[dim]Directory:[/dim]    {workspace_path}"""
-        
+        # Determine permission display text
+        if cli_type == "claude":
+            permission_text = "accept (auto)" if yes else permission_mode
+        else:
+            permission_text = "yolo (auto)" if yes else "interactive"
+
+        # Build panel content
         if explicit_model:
             panel_content = f"""[bold cyan]AIDA Security Assessment Assistant[/bold cyan]
 
 [dim]CLI:[/dim]            {cli_name}
 [dim]Model:[/dim]        {explicit_model}
-[dim]Permission:[/dim]   {"accept (auto)" if yes else permission_mode if cli_type == "claude" else "interactive"}
+[dim]Permission:[/dim]   {permission_text}
 [dim]MCP Server:[/dim]   {"[green]Enabled[/green]" if not no_mcp else "[yellow]Disabled[/yellow]"}
 [dim]Directory:[/dim]    {workspace_path}"""
-        
+        else:
+            panel_content = f"""[bold cyan]AIDA Security Assessment Assistant[/bold cyan]
+
+[dim]CLI:[/dim]            {cli_name}
+[dim]Permission:[/dim]   {permission_text}
+[dim]MCP Server:[/dim]   {"[green]Enabled[/green]" if not no_mcp else "[yellow]Disabled[/yellow]"}
+[dim]Directory:[/dim]    {workspace_path}"""
+
         if assessment:
             panel_content += f"\n[dim]Assessment:[/dim]  [cyan]{assessment}[/cyan] [dim](ID: {assessment_id})[/dim]"
-        
+
         if cli_type == "claude" and base_url:
             panel_content += f"\n[dim]API:[/dim]         {base_url}"
-        
-        panel = Panel(
-            panel_content,
-            border_style="blue",
-            box=box.DOUBLE,
-            padding=(1, 2)
-        )
+
+        panel = Panel(panel_content, border_style="blue", box=box.DOUBLE, padding=(1, 2))
         console.print(panel)
         console.print()
-    
+
     # Launch CLI
     if not quiet:
         console.print(f"[dim]Starting {cli_name}...[/dim]\n")
     else:
-        # Minimal output in quiet mode
         console.print(f"[cyan]AIDA[/cyan] → {assessment or 'AIDA Project'} ({cli_name})\n")
-    
+
     try:
         if cli_type == "claude":
-            # Claude requires changing to workspace dir
             os.chdir(workspace_path)
             os.execvpe("claude", cli_args, env)
-        else:
-            # Kimi handles work-dir via flag, no need to chdir
+        elif cli_type == "kimi":
             os.execvpe("kimi", cli_args, env)
+        else:  # qwen
+            os.chdir(workspace_path)
+            os.execvpe("qwen", cli_args, env)
     except Exception as e:
         console.print(f"[red]Failed to launch {cli_name}: {e}[/red]")
         sys.exit(1)

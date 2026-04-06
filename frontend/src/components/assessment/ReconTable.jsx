@@ -3,8 +3,11 @@ import { Plus, Trash2, Edit2, ChevronDown, ChevronRight } from '../icons/index';
 import UnifiedModal from '../common/UnifiedModal';
 import apiClient from '../../services/api';
 
+const ITEMS_LIMIT = 5;
+
 const ReconTable = ({ title, data, assessmentId, onUpdate }) => {
   const [isAdding, setIsAdding] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [newItem, setNewItem] = useState('');
   const [loading, setLoading] = useState(false);
   const [expandedItems, setExpandedItems] = useState(new Set());
@@ -137,7 +140,7 @@ const ReconTable = ({ title, data, assessmentId, onUpdate }) => {
           ) : (
             <table className="w-full text-xs">
               <tbody>
-                {data.map((item) => {
+                {(showAll ? data : data.slice(0, ITEMS_LIMIT)).map((item) => {
                   const isExpanded = expandedItems.has(item.id);
                   const hasDetails = item.details && Object.keys(item.details).length > 0;
 
@@ -237,6 +240,15 @@ const ReconTable = ({ title, data, assessmentId, onUpdate }) => {
             </table>
           )}
         </div>
+
+        {data.length > ITEMS_LIMIT && (
+          <button
+            onClick={() => setShowAll(v => !v)}
+            className="mt-2 w-full text-xs text-neutral-500 dark:text-neutral-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors py-1"
+          >
+            {showAll ? 'Show less' : `Show more (${data.length - ITEMS_LIMIT} more)`}
+          </button>
+        )}
 
         {isAdding && (
           <div className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">

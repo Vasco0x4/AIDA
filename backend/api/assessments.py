@@ -159,7 +159,8 @@ async def create_assessment(
     """Create a new assessment"""
     service = AssessmentService(db)
 
-    # Check if name already exists
+    # Trim name and check if it already exists
+    assessment.name = assessment.name.strip()
     existing = db.query(Assessment).filter(Assessment.name == assessment.name).first()
     if existing:
         raise HTTPException(

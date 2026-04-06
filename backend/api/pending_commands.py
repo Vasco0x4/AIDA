@@ -32,6 +32,7 @@ settings_router = APIRouter(prefix="/command-settings", tags=["command-settings"
 DEFAULT_EXECUTION_MODE = "open"
 DEFAULT_FILTER_KEYWORDS = ["rm", "delete", "drop", "truncate", "sudo", "chmod", "chown", "mkfs", "dd", "format"]
 DEFAULT_TIMEOUT_SECONDS = 30  # 30 seconds
+DEFAULT_HTTP_METHOD_RULES = {}  # All methods inherit global mode by default
 
 
 # ========== Helper Functions ==========
@@ -41,19 +42,24 @@ def get_command_settings(db: Session) -> dict:
     mode_setting = db.query(PlatformSettings).filter(
         PlatformSettings.key == "command_execution_mode"
     ).first()
-    
+
     keywords_setting = db.query(PlatformSettings).filter(
         PlatformSettings.key == "command_filter_keywords"
     ).first()
-    
+
     timeout_setting = db.query(PlatformSettings).filter(
         PlatformSettings.key == "command_timeout_seconds"
     ).first()
-    
+
+    http_method_rules_setting = db.query(PlatformSettings).filter(
+        PlatformSettings.key == "command_http_method_rules"
+    ).first()
+
     return {
         "execution_mode": mode_setting.value if mode_setting else DEFAULT_EXECUTION_MODE,
         "filter_keywords": json.loads(keywords_setting.value) if keywords_setting else DEFAULT_FILTER_KEYWORDS,
-        "timeout_seconds": int(timeout_setting.value) if timeout_setting else DEFAULT_TIMEOUT_SECONDS
+        "timeout_seconds": int(timeout_setting.value) if timeout_setting else DEFAULT_TIMEOUT_SECONDS,
+        "http_method_rules": json.loads(http_method_rules_setting.value) if http_method_rules_setting else DEFAULT_HTTP_METHOD_RULES,
     }
 
 
@@ -174,7 +180,23 @@ async def update_settings(
             str(update.timeout_seconds),
             "Timeout in seconds for pending commands"
         )
-    
+
+    if update.http_method_rules is not None:
+        # Validate actions
+        valid_actions = {"auto_approve", "require_approval", "inherit"}
+        for method, action in update.http_method_rules.items():
+            if action not in valid_actions:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid action '{action}' for method {method}. Must be one of: {', '.join(valid_actions)}"
+                )
+        set_command_setting(
+            db,
+            "command_http_method_rules",
+            json.dumps(update.http_method_rules),
+            "Per-HTTP-method approval rules: auto_approve, require_approval, or inherit"
+        )
+
     # Broadcast settings change
     await manager.broadcast({
         "type": "command_settings_updated",

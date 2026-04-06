@@ -995,6 +995,16 @@ const Settings = () => {
                     <span>{historyLimitMessage.text}</span>
                   </div>
                 )}
+
+                {/* High history limit warning */}
+                {commandHistoryLimit > 10 && (
+                  <div className="mt-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                    <div className="text-xs text-amber-700 dark:text-amber-300">
+                      <span className="font-semibold">High token consumption warning —</span> Injecting more than 10 commands into context can consume a significant number of tokens per request and may degrade AI performance on large assessments.
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Output Max Length — grouped */}

@@ -89,12 +89,23 @@ export const rejectCommand = async (commandId, rejectedBy = 'admin', reason = ''
     return response.data;
 };
 
+/**
+ * Update HTTP method rules
+ * @param {Object} rules - e.g. { GET: 'auto_approve', POST: 'require_approval' }
+ * @returns {Promise<Object>}
+ */
+export const updateHttpMethodRules = async (rules) => {
+    const response = await apiClient.put('/command-settings', { http_method_rules: rules });
+    return response.data;
+};
+
 export default {
     getCommandSettings,
     getSettings: getCommandSettings,
     updateCommandSettings,
     addKeyword,
     removeKeyword,
+    updateHttpMethodRules,
     getPendingCount,
     listPendingCommands,
     approveCommand,
