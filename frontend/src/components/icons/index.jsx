@@ -70,6 +70,7 @@ import {
   Settings2,
   Bell,
   Send,
+  Users,
 } from 'lucide-react';
 
 // Re-export all icons
@@ -142,6 +143,7 @@ export {
   Settings2,
   Bell,
   Send,
+  Users,
 };
 
 // Export Logo

@@ -80,3 +80,31 @@ def init_db():
     # Always run create_all to pick up new models not yet in migrations.
     # create_all is safe: it only creates tables that don't already exist.
     Base.metadata.create_all(bind=engine)
+
+    # Seed default admin user if no users exist
+    _seed_default_admin()
+
+
+def _seed_default_admin():
+    """Create default admin/admin user if the users table is empty."""
+    try:
+        from models.user import User
+        import bcrypt
+
+        db = SessionLocal()
+        try:
+            if db.query(User).count() == 0:
+                hashed = bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode("utf-8")
+                admin = User(
+                    username="admin",
+                    hashed_password=hashed,
+                    role="admin",
+                    is_active=True,
+                )
+                db.add(admin)
+                db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        import sys
+        print(f"[WARN] Failed to seed default admin: {e}", file=sys.stderr)

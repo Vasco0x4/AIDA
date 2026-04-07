@@ -17,15 +17,48 @@ import {
   Sun,
   FolderOpen,
   Bell,
+  Users,
+  Shield,
+  Trash2,
+  Lock,
+  Eye,
+  EyeOff,
+  Plus,
+  User,
+  Key,
+  Edit2,
 } from '../components/icons';
 import apiClient from '../services/api';
 import workspaceService from '../services/workspaceService';
 import notificationService from '../services/notificationService';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../contexts/AuthContext';
 
 const Settings = () => {
   const { theme, toggleTheme, isDark, primaryColor, setPrimaryColor, colorThemes } = useTheme();
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === 'admin';
   const [activeTab, setActiveTab] = useState('general');
+
+  // --- Users management state ---
+  const [usersList, setUsersList] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [usersError, setUsersError] = useState('');
+  const [usersMessage, setUsersMessage] = useState(null);
+  // Change password
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState(null);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  // Create user (admin)
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('user');
+  const [creatingUser, setCreatingUser] = useState(false);
   const [systemStatus, setSystemStatus] = useState({
     backend: { status: 'checking', latency: 0, version: '' },
     database: { status: 'checking', connected: false, version: '' },
@@ -73,6 +106,107 @@ const Settings = () => {
   const [savingUploadLimits, setSavingUploadLimits] = useState(false);
   const [uploadLimitsMessage, setUploadLimitsMessage] = useState(null);
 
+
+  // --- Users management functions ---
+  const loadUsers = async () => {
+    setLoadingUsers(true);
+    setUsersError('');
+    try {
+      const res = await apiClient.get('/auth/users');
+      setUsersList(res.data);
+    } catch (err) {
+      setUsersError(err.response?.data?.detail || 'Failed to load users');
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage({ type: 'error', text: 'Passwords do not match' });
+      return;
+    }
+    setChangingPassword(true);
+    setPasswordMessage(null);
+    try {
+      await apiClient.put('/auth/change-password', {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPasswordMessage({ type: 'success', text: 'Password changed successfully' });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err) {
+      setPasswordMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to change password' });
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setCreatingUser(true);
+    setUsersMessage(null);
+    try {
+      await apiClient.post('/auth/users', {
+        username: newUsername,
+        password: newUserPassword,
+        role: newUserRole,
+      });
+      setUsersMessage({ type: 'success', text: `User '${newUsername}' created` });
+      setNewUsername('');
+      setNewUserPassword('');
+      setNewUserRole('user');
+      setShowCreateUser(false);
+      loadUsers();
+    } catch (err) {
+      setUsersMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to create user' });
+    } finally {
+      setCreatingUser(false);
+    }
+  };
+
+  const handleToggleRole = async (userId, currentRole) => {
+    const newRole = currentRole === 'admin' ? 'user' : 'admin';
+    try {
+      await apiClient.put(`/auth/users/${userId}`, { role: newRole });
+      loadUsers();
+    } catch (err) {
+      setUsersMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to update role' });
+    }
+  };
+
+  const handleToggleActive = async (userId, currentActive) => {
+    try {
+      await apiClient.put(`/auth/users/${userId}`, { is_active: !currentActive });
+      loadUsers();
+    } catch (err) {
+      setUsersMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to update user' });
+    }
+  };
+
+  const handleDeleteUser = async (userId, username) => {
+    if (!confirm(`Delete user '${username}'? This cannot be undone.`)) return;
+    try {
+      await apiClient.delete(`/auth/users/${userId}`);
+      setUsersMessage({ type: 'success', text: `User '${username}' deleted` });
+      loadUsers();
+    } catch (err) {
+      setUsersMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to delete user' });
+    }
+  };
+
+  const handleResetPassword = async (userId, username) => {
+    if (!confirm(`Reset password for '${username}' to their username?`)) return;
+    try {
+      await apiClient.put(`/auth/users/${userId}/reset-password`);
+      setUsersMessage({ type: 'success', text: `Password for '${username}' reset to username` });
+    } catch (err) {
+      setUsersMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to reset password' });
+    }
+  };
 
   useEffect(() => {
     loadSystemStatus();
@@ -559,6 +693,7 @@ const Settings = () => {
 
   useEffect(() => {
     if (activeTab === 'notifications') loadNotifConfigs();
+    if (activeTab === 'users' && isAdmin) loadUsers();
   }, [activeTab]);
 
   const loadNotifConfigs = async () => {
@@ -667,6 +802,7 @@ const Settings = () => {
     { id: 'general', label: 'General', icon: SettingsIcon },
     { id: 'tools', label: 'Tools', icon: Terminal },
     { id: 'notifications', label: 'Notifications', icon: Bell },
+    { id: 'users', label: 'Users', icon: Users },
     { id: 'about', label: 'About', icon: Info }
   ];
 
@@ -1539,7 +1675,280 @@ const Settings = () => {
           </div>
         )}
 
-        {/* TAB 4: ABOUT */}
+        {/* TAB: USERS */}
+        {activeTab === 'users' && (
+          <div className="space-y-6">
+            {/* Change Own Password */}
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-3 flex items-center gap-2">
+                <Lock className="w-4 h-4" />
+                Change Password
+              </h2>
+              <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg p-4">
+                {passwordMessage && (
+                  <div className={`mb-3 p-2.5 rounded-lg text-xs flex items-center gap-2 ${
+                    passwordMessage.type === 'success'
+                      ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
+                      : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+                  }`}>
+                    {passwordMessage.type === 'success' ? <CheckCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                    {passwordMessage.text}
+                  </div>
+                )}
+                <form onSubmit={handleChangePassword} className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Current Password</label>
+                    <div className="relative">
+                      <input
+                        type={showCurrentPassword ? 'text' : 'password'}
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                        required
+                        className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 outline-none pr-10"
+                      />
+                      <button type="button" onClick={() => setShowCurrentPassword(!showCurrentPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
+                        {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">New Password</label>
+                    <div className="relative">
+                      <input
+                        type={showNewPassword ? 'text' : 'password'}
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        required
+                        minLength={6}
+                        className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 outline-none pr-10"
+                      />
+                      <button type="button" onClick={() => setShowNewPassword(!showNewPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
+                        {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Confirm New Password</label>
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      required
+                      minLength={6}
+                      className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={changingPassword}
+                    className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white transition-colors"
+                  >
+                    {changingPassword ? 'Saving...' : 'Change Password'}
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            {/* Admin: User Management */}
+            {isAdmin && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+                    <Shield className="w-4 h-4" />
+                    User Management
+                    <span className="text-xs font-normal text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">Admin</span>
+                  </h2>
+                  <button
+                    onClick={() => setShowCreateUser(!showCreateUser)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add User
+                  </button>
+                </div>
+
+                {usersMessage && (
+                  <div className={`mb-3 p-2.5 rounded-lg text-xs flex items-center gap-2 ${
+                    usersMessage.type === 'success'
+                      ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
+                      : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+                  }`}>
+                    {usersMessage.type === 'success' ? <CheckCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                    {usersMessage.text}
+                  </div>
+                )}
+
+                {/* Create User Form */}
+                {showCreateUser && (
+                  <div className="mb-4 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg p-4">
+                    <h3 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-3">New User</h3>
+                    <form onSubmit={handleCreateUser} className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Username</label>
+                          <input
+                            type="text"
+                            value={newUsername}
+                            onChange={(e) => setNewUsername(e.target.value)}
+                            required
+                            minLength={3}
+                            className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="Username"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Password</label>
+                          <input
+                            type="password"
+                            value={newUserPassword}
+                            onChange={(e) => setNewUserPassword(e.target.value)}
+                            required
+                            minLength={6}
+                            className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="Min 6 chars"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1">Role</label>
+                        <select
+                          value={newUserRole}
+                          onChange={(e) => setNewUserRole(e.target.value)}
+                          className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-blue-500 outline-none"
+                        >
+                          <option value="user">User</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={creatingUser}
+                          className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white transition-colors"
+                        >
+                          {creatingUser ? 'Creating...' : 'Create User'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowCreateUser(false)}
+                          className="px-4 py-2 text-sm font-medium rounded-lg border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* Users List */}
+                <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
+                  {loadingUsers ? (
+                    <div className="p-6 text-center text-sm text-neutral-500">Loading users...</div>
+                  ) : usersError ? (
+                    <div className="p-6 text-center text-sm text-red-500">{usersError}</div>
+                  ) : (
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
+                          <th className="text-left px-4 py-2.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">User</th>
+                          <th className="text-left px-4 py-2.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">Role</th>
+                          <th className="text-left px-4 py-2.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">Status</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-medium text-neutral-500 dark:text-neutral-400">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
+                        {usersList.map((u) => (
+                          <tr key={u.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-700/30 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2.5">
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white ${
+                                  u.role === 'admin' ? 'bg-amber-500' : 'bg-blue-500'
+                                }`}>
+                                  {u.username[0].toUpperCase()}
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{u.username}</p>
+                                  {u.email && <p className="text-xs text-neutral-500">{u.email}</p>}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                                u.role === 'admin'
+                                  ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                                  : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                              }`}>
+                                {u.role === 'admin' ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
+                                {u.role}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1.5 text-xs ${
+                                u.is_active
+                                  ? 'text-green-600 dark:text-green-400'
+                                  : 'text-red-600 dark:text-red-400'
+                              }`}>
+                                <div className={`w-1.5 h-1.5 rounded-full ${u.is_active ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                {u.is_active ? 'Active' : 'Disabled'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              {currentUser?.id !== u.id ? (
+                                <div className="flex items-center justify-end gap-1">
+                                  <button
+                                    onClick={() => handleToggleRole(u.id, u.role)}
+                                    title={u.role === 'admin' ? 'Demote to user' : 'Promote to admin'}
+                                    className="p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-600 text-neutral-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                                  >
+                                    <Shield className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleToggleActive(u.id, u.is_active)}
+                                    title={u.is_active ? 'Disable user' : 'Enable user'}
+                                    className="p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-600 text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                                  >
+                                    {u.is_active ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                  </button>
+                                  <button
+                                    onClick={() => handleResetPassword(u.id, u.username)}
+                                    title="Reset password to username"
+                                    className="p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-600 text-neutral-500 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"
+                                  >
+                                    <Key className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteUser(u.id, u.username)}
+                                    title="Delete user"
+                                    className="p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-600 text-neutral-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-neutral-400 italic">You</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Non-admin info */}
+            {!isAdmin && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                <p className="text-sm text-blue-700 dark:text-blue-300">
+                  User management is available to administrators only. Contact an admin to modify accounts.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB: ABOUT */}
         {activeTab === 'about' && (
           <div className="space-y-6">
             {/* System Information */}

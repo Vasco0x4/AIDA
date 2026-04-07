@@ -1,6 +1,7 @@
 """
 Authentication API endpoints
 """
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
@@ -8,48 +9,16 @@ from database import get_db
 from models.user import User
 from auth import (
     UserCreate, UserLogin, UserResponse, TokenResponse,
-    hash_password, verify_password, create_access_token, get_current_user,
+    ChangePasswordRequest, AdminUserCreate, AdminUserUpdate,
+    hash_password, verify_password, create_access_token,
+    get_current_user, require_admin,
 )
 from middleware.rate_limit import limiter
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/register", response_model=TokenResponse)
-@limiter.limit("5/minute")
-def register(request: Request, data: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user. First user can register freely; subsequent require auth."""
-    user_count = db.query(User).count()
-
-    # If users already exist, only allow registration if not enforcing invite-only
-    # For now: open registration (can be locked down later)
-    if db.query(User).filter(User.username == data.username).first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username already exists",
-        )
-
-    if data.email and db.query(User).filter(User.email == data.email).first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
-        )
-
-    user = User(
-        username=data.username,
-        email=data.email,
-        hashed_password=hash_password(data.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    token = create_access_token(user.id, user.username)
-
-    return TokenResponse(
-        access_token=token,
-        user=UserResponse.model_validate(user),
-    )
+    # Public registration removed — admin creates accounts via POST /auth/users
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -94,3 +63,123 @@ def auth_status(db: Session = Depends(get_db)):
         "auth_required": user_count > 0,
         "user_count": user_count,
     }
+
+
+# --- Password Management ---
+
+@router.put("/change-password")
+def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change own password."""
+    if current_user is None:
+        raise HTTPException(status_code=400, detail="No users exist yet")
+
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    current_user.hashed_password = hash_password(data.new_password)
+    db.commit()
+    return {"message": "Password changed successfully"}
+
+
+# --- Admin: User Management ---
+
+@router.get("/users", response_model=List[UserResponse])
+def list_users(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """List all users (admin only)."""
+    return db.query(User).order_by(User.id).all()
+
+
+@router.post("/users", response_model=UserResponse)
+def create_user(
+    data: AdminUserCreate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a new user (admin only)."""
+    if db.query(User).filter(User.username == data.username).first():
+        raise HTTPException(status_code=409, detail="Username already exists")
+
+    if data.email and db.query(User).filter(User.email == data.email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user = User(
+        username=data.username,
+        email=data.email,
+        hashed_password=hash_password(data.password),
+        role=data.role,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.put("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: int,
+    data: AdminUserUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Update user role or active status (admin only)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prevent admin from demoting themselves
+    if admin and user.id == admin.id and data.role and data.role != "admin":
+        raise HTTPException(status_code=400, detail="Cannot demote yourself")
+
+    if data.role is not None:
+        user.role = data.role
+    if data.is_active is not None:
+        # Prevent admin from deactivating themselves
+        if admin and user.id == admin.id and not data.is_active:
+            raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+        user.is_active = data.is_active
+
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a user (admin only). Cannot delete yourself."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if admin and user.id == admin.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+
+    db.delete(user)
+    db.commit()
+    return {"message": f"User '{user.username}' deleted"}
+
+
+@router.put("/users/{user_id}/reset-password")
+def reset_user_password(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Reset a user's password to their username (admin only)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.hashed_password = hash_password(user.username)
+    db.commit()
+    return {"message": f"Password for '{user.username}' reset to username"}
