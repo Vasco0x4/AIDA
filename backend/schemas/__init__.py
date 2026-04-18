@@ -29,6 +29,12 @@ from .section import (
     SectionUpdate,
     SectionResponse
 )
+from .agent_run import (
+    AgentRunCreate,
+    AgentRunResponse,
+    AgentRunSummary,
+    AgentRunListResponse,
+)
 
 __all__ = [
     "AssessmentBase",
@@ -48,5 +54,9 @@ __all__ = [
     "SectionBase",
     "SectionCreate",
     "SectionUpdate",
-    "SectionResponse"
+    "SectionResponse",
+    "AgentRunCreate",
+    "AgentRunResponse",
+    "AgentRunSummary",
+    "AgentRunListResponse",
 ]

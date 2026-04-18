@@ -49,6 +49,13 @@ class EventType(str, Enum):
     FOLDER_UPDATED = "folder_updated"
     FOLDER_DELETED = "folder_deleted"
 
+    # Agent run events (UI-initiated Claude sessions)
+    AGENT_RUN_STARTED = "agent_run_started"
+    AGENT_RUN_MESSAGE = "agent_run_message"
+    AGENT_RUN_COMPLETED = "agent_run_completed"
+    AGENT_RUN_FAILED = "agent_run_failed"
+    AGENT_RUN_STOPPED = "agent_run_stopped"
+
     # System events
     SYSTEM_STATUS_CHANGED = "system_status_changed"
     ERROR = "error"
@@ -192,6 +199,51 @@ def event_credential_added(assessment_id: int, credential_data: dict) -> dict:
         EventType.CREDENTIAL_ADDED,
         {"credential": credential_data},
         assessment_id=assessment_id
+    )
+
+
+def event_agent_run_started(assessment_id: int, run_data: dict) -> dict:
+    """Create agent_run_started event"""
+    return create_event(
+        EventType.AGENT_RUN_STARTED,
+        {"run": run_data},
+        assessment_id=assessment_id,
+    )
+
+
+def event_agent_run_message(assessment_id: int, run_id: int, message: dict) -> dict:
+    """Create agent_run_message event — one SDK-level event in the stream"""
+    return create_event(
+        EventType.AGENT_RUN_MESSAGE,
+        {"run_id": run_id, "message": message},
+        assessment_id=assessment_id,
+    )
+
+
+def event_agent_run_completed(assessment_id: int, run_data: dict) -> dict:
+    """Create agent_run_completed event"""
+    return create_event(
+        EventType.AGENT_RUN_COMPLETED,
+        {"run": run_data},
+        assessment_id=assessment_id,
+    )
+
+
+def event_agent_run_failed(assessment_id: int, run_id: int, error: str) -> dict:
+    """Create agent_run_failed event"""
+    return create_event(
+        EventType.AGENT_RUN_FAILED,
+        {"run_id": run_id, "error": error},
+        assessment_id=assessment_id,
+    )
+
+
+def event_agent_run_stopped(assessment_id: int, run_id: int) -> dict:
+    """Create agent_run_stopped event"""
+    return create_event(
+        EventType.AGENT_RUN_STOPPED,
+        {"run_id": run_id},
+        assessment_id=assessment_id,
     )
 
 

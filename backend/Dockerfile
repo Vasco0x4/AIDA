@@ -26,6 +26,37 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
     apt-get install -y --no-install-recommends docker-ce-cli && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Node.js 20 + Claude Code CLI — powers UI-initiated headless agent
+# runs. Auth comes from CLAUDE_CODE_OAUTH_TOKEN env (generated once on the
+# host via `claude setup-token`) so the Max subscription works from inside
+# the container without access to the macOS Keychain.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs util-linux && \
+    npm install -g @anthropic-ai/claude-code && \
+    npm cache clean --force && \
+    rm -rf /var/lib/apt/lists/*
+
+# Claude CLI refuses `--dangerously-skip-permissions` (our bypassPermissions
+# mode) when invoked as root. uvicorn itself still needs root for the volume
+# mounts, so we only drop privileges for the `claude` subprocess via a thin
+# wrapper that re-execs under a dedicated non-root user. setpriv is used
+# (not runuser) because runuser runs PAM session setup, which swallows the
+# stdin/stdout pipes the SDK needs for its JSON protocol. HOME must be set
+# explicitly so claude can write its session state under the new uid.
+RUN useradd -u 1000 -m -s /bin/bash aida && \
+    install -d -o aida -g aida /home/aida/.claude && \
+    CLAUDE_REAL="$(readlink -f /usr/bin/claude)" && \
+    mv "$CLAUDE_REAL" "${CLAUDE_REAL}.real" && \
+    { \
+      echo '#!/bin/sh'; \
+      echo 'if [ "$(id -u)" = "0" ]; then'; \
+      echo "  exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/aida ${CLAUDE_REAL}.real \"\$@\""; \
+      echo 'else'; \
+      echo "  exec ${CLAUDE_REAL}.real \"\$@\""; \
+      echo 'fi'; \
+    } > "$CLAUDE_REAL" && \
+    chmod +x "$CLAUDE_REAL"
+
 # Set working directory
 WORKDIR /app
 

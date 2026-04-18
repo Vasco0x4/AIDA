@@ -50,4 +50,5 @@ class Assessment(Base):
     credentials_list = relationship("Credential", back_populates="assessment", cascade="all, delete-orphan")
     pending_commands = relationship("PendingCommand", back_populates="assessment", cascade="all, delete-orphan")
     timeline_events = relationship("TimelineEvent", back_populates="assessment", cascade="all, delete-orphan")
+    agent_runs = relationship("AgentRun", back_populates="assessment", cascade="all, delete-orphan")
 
