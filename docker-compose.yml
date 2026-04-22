@@ -44,6 +44,9 @@ services:
       # Route docker CLI through the socket proxy instead of raw daemon socket.
       # The proxy only allows inspect/exec/start — no run/create/volumes.
       DOCKER_HOST: tcp://docker-proxy:2375
+      # CLAUDE_CODE_OAUTH_TOKEN is loaded from backend/.env via env_file above.
+      # Generate it once on the host with `claude setup-token` and paste the
+      # result into backend/.env. Absent → AgentSession falls back to mock.
     ports:
       # Bind to localhost only — the API must not be reachable from the LAN.
       - "127.0.0.1:8000:8000"

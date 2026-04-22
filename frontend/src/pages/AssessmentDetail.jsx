@@ -13,6 +13,7 @@ import ImportScanModal from '../components/assessment/ImportScanModal';
 import CredentialsManager from '../components/assessment/CredentialsManager';
 import ContextDocumentsPanel from '../components/assessment/ContextDocumentsPanel';
 import AttackTimeline from '../components/assessment/AttackTimeline';
+import AgentRunPanel from '../components/assessment/AgentRunPanel';
 import SendReportModal from '../components/assessment/SendReportModal';
 
 import ChangeContainerModal from '../components/workspace/ChangeContainerModal';
@@ -1016,6 +1017,9 @@ const AssessmentDetail = () => {
           />
         )}
       </div>
+
+      {/* AI Scans - UI-initiated headless Claude sessions */}
+      <AgentRunPanel assessmentId={parseInt(id)} subscribe={subscribe} />
 
       {/* Command History - Version compacte et navigable */}
       <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg">

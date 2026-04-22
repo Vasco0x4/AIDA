@@ -158,6 +158,48 @@ Here's Claude Desktop as an example:
 
 ---
 
+## UI-Initiated Scans (headless agent)
+
+In addition to the CLI flow above, you can kick off a fully headless Claude
+session directly from the assessment page. The agent runs inside the backend
+container, uses the same MCP server, and streams every `thinking` / `tool_use`
+/ `tool_result` event into a live transcript in the UI. You can stop the run
+at any time, inspect past runs, and pick a specific model (Sonnet 4.6 / Opus
+4.7 / Haiku 4.5).
+
+This path auth'es against your **Max subscription** via an OAuth token — no
+API key required, no extra per-token billing.
+
+**One-time setup:**
+
+1. On the host (not inside the container) generate a token:
+   ```bash
+   claude setup-token
+   ```
+   It'll open a browser, ask you to sign in, and print a long `sk-ant-oat01-…`
+   string.
+
+2. Paste it into `backend/.env`:
+   ```ini
+   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+   ```
+
+3. (Re)start the stack:
+   ```bash
+   ./start.sh
+   ```
+
+Then open any assessment → **AI Scans** panel → *New scan* → describe the
+goal and hit *Start*. Leave the field blank and you get a scripted mock run
+— handy for demoing the panel without credentials.
+
+> Behind the scenes the agent runs as a non-root user inside the container
+> (claude CLI refuses `--dangerously-skip-permissions` under root) and talks
+> to the `aida-pentest` container through the same docker socket proxy the
+> rest of the backend uses.
+
+---
+
 ## Works With Any AI
 
 AIDA uses the **Model Context Protocol (MCP)** - an open standard. If your AI client supports MCP, it works with AIDA.
