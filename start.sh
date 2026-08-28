@@ -13,6 +13,11 @@
 #     and a browser warning users have to click through. We skip it.
 #   - --lan exposes traffic over WiFi → encryption mandatory.
 #   - --domain serves over the internet → Let's Encrypt for a real cert.
+#
+# Deployment mode (persisted in .aida/deployment-mode) — orthogonal to the
+# transport flags above; can be combined with any of them:
+#   ./start.sh --container   Execute commands in the aida-pentest container (default)
+#   ./start.sh --localhost   Execute commands on the host via the aida-host-agent
 # ==============================================================================
 
 set -euo pipefail
@@ -41,6 +46,7 @@ TLS_MODE=""          # "" (none) | lan | domain
 TLS_DOMAIN=""        # only when TLS_MODE=domain
 TLS_EMAIL=""         # optional, only used in domain mode (Let's Encrypt)
 SKIP_CHECKS=false
+DEPLOYMENT_MODE_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -74,6 +80,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --email=*)    TLS_EMAIL="${1#*=}"; shift ;;
         --fast|-f)    SKIP_CHECKS=true; shift ;;
+        --localhost)  DEPLOYMENT_MODE_OVERRIDE="localhost"; shift ;;
+        --container)  DEPLOYMENT_MODE_OVERRIDE="container"; shift ;;
         --help|-h)
             cat <<EOF
 Usage: ./start.sh [OPTIONS]
@@ -86,6 +94,10 @@ Modes (mutually exclusive — pick one):
   --dev, -d              Dev mode   — http://localhost:5173    (Vite hot reload)
   --dev --lan            Dev + LAN  — Vite accessible from your network (HTTP only)
 
+Deployment mode (persisted in .aida/deployment-mode) — combine with any of the above:
+  --container            Execute commands inside the aida-pentest container (default)
+  --localhost            Execute commands directly on the host via aida-host-agent
+
 Options:
   --email EMAIL          Optional email for Let's Encrypt notifications (with --domain)
   --fast, -f             Skip dependency checks (faster startup)
@@ -96,6 +108,7 @@ Examples:
   ./start.sh --lan
   ./start.sh --lan --lan-port 8443
   ./start.sh --domain aida.example.com --email admin@example.com
+  ./start.sh --localhost
 EOF
             exit 0
             ;;
@@ -132,6 +145,39 @@ CADDY_HTTP_PORT="${CADDY_HTTP_PORT:-80}"
 if [[ "$CADDY_HTTPS_PORT" != "443" && "$CADDY_HTTP_PORT" == "80" ]]; then
     CADDY_HTTP_PORT=""
 fi
+
+# ==============================================================================
+# DEPLOYMENT MODE (container vs localhost)
+# ==============================================================================
+
+DEPLOYMENT_MODE_FILE="$SCRIPT_DIR/.aida/deployment-mode"
+mkdir -p "$SCRIPT_DIR/.aida"
+
+PREVIOUS_DEPLOYMENT_MODE=$(cat "$DEPLOYMENT_MODE_FILE" 2>/dev/null || echo "")
+
+if [[ -n "$DEPLOYMENT_MODE_OVERRIDE" ]]; then
+    echo "$DEPLOYMENT_MODE_OVERRIDE" > "$DEPLOYMENT_MODE_FILE"
+    DEPLOYMENT_MODE="$DEPLOYMENT_MODE_OVERRIDE"
+else
+    DEPLOYMENT_MODE="${PREVIOUS_DEPLOYMENT_MODE:-container}"
+fi
+
+if [[ "$DEPLOYMENT_MODE" != "container" && "$DEPLOYMENT_MODE" != "localhost" ]]; then
+    warn "Unknown deployment mode '$DEPLOYMENT_MODE' — falling back to 'container'"
+    DEPLOYMENT_MODE="container"
+    echo "container" > "$DEPLOYMENT_MODE_FILE"
+fi
+
+# If the user is switching deployment modes (e.g. --container → --localhost),
+# we need to tear the stack down so the backend container is recreated with
+# the new environment (DEPLOYMENT_MODE, bind mounts, etc.). Leaving the old
+# container running would pin the old mode until the next manual restart.
+DEPLOYMENT_MODE_SWITCHED=false
+if [[ -n "$PREVIOUS_DEPLOYMENT_MODE" && "$PREVIOUS_DEPLOYMENT_MODE" != "$DEPLOYMENT_MODE" ]]; then
+    DEPLOYMENT_MODE_SWITCHED=true
+fi
+
+export DEPLOYMENT_MODE
 
 # ==============================================================================
 # MODE-SPECIFIC CONFIG
@@ -223,6 +269,16 @@ EOF
     esac
 fi
 
+# Layer docker-compose.localhost.yml on top when in localhost deployment mode.
+# This disables aida-pentest / docker-proxy and bind-mounts the host-agent
+# socket and token into the backend container.
+if [[ "$DEPLOYMENT_MODE" == "localhost" ]]; then
+    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.localhost.yml"
+    MODE_LABEL="${MODE_LABEL} (localhost)"
+else
+    MODE_LABEL="${MODE_LABEL} (container)"
+fi
+
 section "AIDA - ${MODE_LABEL} Mode"
 
 # ==============================================================================
@@ -299,6 +355,36 @@ else
     elif [[ -n "$TLS_MODE" ]] && is_running_with_port 31337 && ! is_running_with_port 443; then
         teardown_other "-f docker-compose.yml -f docker-compose.prod.yml" "Local prod stack"
     fi
+fi
+
+# Deployment-mode switch (container ⇄ localhost). Existing backend container
+# would still run with the old DEPLOYMENT_MODE env var until recreated, so
+# we tear the stack down to force fresh env injection on the next `up`.
+if [[ "$DEPLOYMENT_MODE_SWITCHED" == "true" ]]; then
+    warn "Deployment mode changed: $PREVIOUS_DEPLOYMENT_MODE → $DEPLOYMENT_MODE — recreating backend stack..."
+    $COMPOSE_CMD -f docker-compose.yml -f docker-compose.prod.yml down --timeout 15 2>/dev/null || true
+    $COMPOSE_CMD down --timeout 15 2>/dev/null || true
+
+    # If we're leaving localhost mode, the host-agent daemon is no longer
+    # needed — kill it and remove its socket so nothing stale lingers. The
+    # inverse (starting the daemon when entering localhost mode) is handled
+    # further down in the Host Agent section.
+    if [[ "$PREVIOUS_DEPLOYMENT_MODE" == "localhost" && "$DEPLOYMENT_MODE" != "localhost" ]]; then
+        HOST_AGENT_PID_FILE_SWITCH="$HOME/.aida/host-agent.pid"
+        HOST_AGENT_SOCK_SWITCH="$HOME/.aida/host-agent.sock"
+        if [[ -f "$HOST_AGENT_PID_FILE_SWITCH" ]]; then
+            old_pid=$(cat "$HOST_AGENT_PID_FILE_SWITCH" 2>/dev/null || true)
+            if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+                kill "$old_pid" 2>/dev/null || true
+                log "Stopped host-agent (pid $old_pid) — not needed in $DEPLOYMENT_MODE mode"
+            fi
+            rm -f "$HOST_AGENT_PID_FILE_SWITCH"
+        fi
+        rm -f "$HOST_AGENT_SOCK_SWITCH"
+    fi
+
+    log "Previous stack stopped — data preserved"
+    sleep 1
 fi
 
 # ==============================================================================
@@ -448,6 +534,16 @@ done
 if [[ -n "$TLS_MODE" ]] && ! echo "$running_names" | grep -q "^aida_caddy$"; then
     core_up=false
 fi
+# In localhost mode, the host-agent daemon must also be alive — otherwise
+# the backend has no exec target. If the stack is up but the agent isn't,
+# fall through to the normal start path (which will (re)start the agent).
+if [[ "$core_up" == "true" && "$DEPLOYMENT_MODE" == "localhost" ]]; then
+    HOST_AGENT_PID_FILE_CHECK="$HOME/.aida/host-agent.pid"
+    if [[ ! -f "$HOST_AGENT_PID_FILE_CHECK" ]] || ! kill -0 "$(cat "$HOST_AGENT_PID_FILE_CHECK" 2>/dev/null)" 2>/dev/null; then
+        warn "Backend stack is up but host-agent is down — restarting host-agent..."
+        core_up=false
+    fi
+fi
 
 if [[ "$core_up" == "true" ]]; then
     # If TLS mode and the Caddyfile changed (e.g. --lan → --domain), reload Caddy.
@@ -518,6 +614,100 @@ if [[ "$SKIP_CHECKS" == "false" ]]; then
         [[ -f backend/requirements.txt ]] && backend/venv/bin/pip install -q -r backend/requirements.txt
         log "Backend environment ready"
     fi
+fi
+
+# ==============================================================================
+# HOST AGENT (localhost deployment mode only)
+# ==============================================================================
+#
+# The aida-host-agent daemon runs directly on the host and serves a Unix
+# socket that the Dockerized backend talks to when DEPLOYMENT_MODE=localhost.
+# It speaks a small JSON-over-socket protocol defined in tools/host_agent.py
+# and replaces `docker exec` as the command execution path.
+#
+# Layout (all under ~/.aida):
+#   host-agent.sock   — Unix socket (bind-mounted into backend)
+#   host-agent.token  — shared secret, 0600 (bind-mounted RO into backend)
+#   host-agent.pid    — daemon PID (used by stop.sh)
+#   host-agent.log    — stdout/stderr
+#   workspaces/       — assessment workspace root on the host
+
+HOST_AGENT_DIR="$HOME/.aida"
+HOST_AGENT_SOCK="$HOST_AGENT_DIR/host-agent.sock"
+HOST_AGENT_TOKEN="$HOST_AGENT_DIR/host-agent.token"
+HOST_AGENT_PID="$HOST_AGENT_DIR/host-agent.pid"
+HOST_AGENT_LOG="$HOST_AGENT_DIR/host-agent.log"
+HOST_WORKSPACES="$HOST_AGENT_DIR/workspaces"
+
+start_host_agent() {
+    mkdir -p "$HOST_AGENT_DIR" "$HOST_WORKSPACES"
+    chmod 700 "$HOST_AGENT_DIR"
+
+    # Generate the shared-secret token on first run. The backend reads this
+    # file via the bind-mount and compares it against the token on every
+    # socket call.
+    if [[ ! -f "$HOST_AGENT_TOKEN" ]]; then
+        # 256 bits of entropy, url-safe — easy to grep for in logs.
+        if command -v openssl &>/dev/null; then
+            openssl rand -hex 32 > "$HOST_AGENT_TOKEN"
+        else
+            head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$HOST_AGENT_TOKEN"
+        fi
+        chmod 600 "$HOST_AGENT_TOKEN"
+        log "Generated host-agent token"
+    fi
+
+    # Clean up a stale socket from a previous crashed run so bind() can
+    # reclaim the path.
+    if [[ -S "$HOST_AGENT_SOCK" ]]; then
+        if [[ -f "$HOST_AGENT_PID" ]] && kill -0 "$(cat "$HOST_AGENT_PID")" 2>/dev/null; then
+            log "Host-agent already running (pid $(cat "$HOST_AGENT_PID"))"
+            return 0
+        fi
+        rm -f "$HOST_AGENT_SOCK"
+    fi
+
+    # Find a Python interpreter — reuse backend/venv if available (has all
+    # deps we need anyway; stdlib is sufficient for the agent but the venv
+    # guarantees a consistent Python version).
+    local py="python3"
+    if [[ -x "$SCRIPT_DIR/backend/venv/bin/python" ]]; then
+        py="$SCRIPT_DIR/backend/venv/bin/python"
+    fi
+
+    log "Starting host-agent daemon..."
+    nohup "$py" "$SCRIPT_DIR/tools/host_agent.py" \
+        --socket "$HOST_AGENT_SOCK" \
+        --token "$HOST_AGENT_TOKEN" \
+        --pidfile "$HOST_AGENT_PID" \
+        >"$HOST_AGENT_LOG" 2>&1 &
+    # Back-up pidfile in case the agent hasn't written its own yet by the time
+    # stop.sh reads it (the daemon writes pidfile after asyncio.run starts).
+    echo $! > "$HOST_AGENT_PID"
+
+    # Wait up to 5s for the socket to appear — gives us a useful error
+    # message when the agent crashes on startup instead of a cryptic
+    # bind-mount failure later.
+    # Use `i=$((i+1))` instead of `((i++))` because the latter returns the
+    # pre-increment value (0 on first iteration), which `set -e` treats as
+    # a command failure and aborts the script.
+    local i=0
+    while [[ ! -S "$HOST_AGENT_SOCK" ]]; do
+        i=$((i+1))
+        if [[ $i -ge 10 ]]; then
+            error "Host-agent failed to start — see $HOST_AGENT_LOG"
+            tail -n 20 "$HOST_AGENT_LOG" || true
+            exit 1
+        fi
+        sleep 0.5
+    done
+
+    log "Host-agent ready (pid $(cat "$HOST_AGENT_PID"))"
+}
+
+if [[ "$DEPLOYMENT_MODE" == "localhost" ]]; then
+    section "Host Agent"
+    start_host_agent
 fi
 
 # ==============================================================================
@@ -685,7 +875,10 @@ wait_for_service() {
 
     printf "  %-12s " "$name..."
     while ! eval "$check_cmd" &>/dev/null; do
-        ((i++))
+        # `((i++))` returns the pre-increment value which is 0 on first
+        # iteration — `set -e` would then kill the script. Use arithmetic
+        # assignment which always yields a truthy exit status.
+        i=$((i+1))
         if [[ $i -ge $max_wait ]]; then
             echo -e "${RED}TIMEOUT${NC}"
             return 1
@@ -723,7 +916,9 @@ fi
 # PENTEST CONTAINER STATUS
 # ==============================================================================
 
-if [[ "$CONTAINER_MODE" == "exegol" ]]; then
+if [[ "$DEPLOYMENT_MODE" == "localhost" ]]; then
+    log "Deployment mode: localhost (commands execute on the host)"
+elif [[ "$CONTAINER_MODE" == "exegol" ]]; then
     EXEGOL_RUNNING=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i "^exegol-" || true)
     if [[ -n "$EXEGOL_RUNNING" ]]; then
         log "Exegol container: $EXEGOL_RUNNING"

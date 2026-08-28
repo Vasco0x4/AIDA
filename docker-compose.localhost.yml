@@ -1,0 +1,72 @@
+# ==============================================================================
+# AIDA - Localhost deployment mode override
+# ==============================================================================
+# Layered on top of docker-compose.yml (and docker-compose.prod.yml when
+# appropriate) by start.sh when the user selects localhost mode via
+# `./start.sh --localhost`.
+#
+# Differences from the default container deployment:
+#   - backend talks to the host-agent daemon via a bind-mounted Unix socket
+#     instead of docker exec-ing into aida-pentest
+#   - DEPLOYMENT_MODE=localhost is injected into the backend container
+#   - DOCKER_HOST is cleared so the backend doesn't try to reach the
+#     docker-proxy (which we disable below)
+#   - aida-pentest and docker-proxy are disabled (profile trick: we assign
+#     them to a profile that's never activated, so docker compose ignores
+#     them without requiring us to list services explicitly on the CLI)
+#
+# Host-side requirements (handled by start.sh):
+#   - ~/.aida/host-agent.sock — Unix socket served by tools/host_agent.py
+#   - ~/.aida/host-agent.token — shared-secret token (0600)
+#   - ~/.aida/workspaces — shared workspace root (also used by container mode)
+# ==============================================================================
+
+services:
+  backend:
+    environment:
+      DEPLOYMENT_MODE: localhost
+      # Clear DOCKER_HOST — the base compose sets it to tcp://docker-proxy:2375
+      # and the proxy is disabled in localhost mode. Leaving it pointed at a
+      # non-existent host would cause startup noise when any code path calls
+      # docker CLI.
+      DOCKER_HOST: ""
+      # Socket + token paths are the SAME on host and in container thanks to
+      # the identity bind-mount below. ${HOME} is expanded by docker compose
+      # on the host at parse time, so the container sees a literal path like
+      # /home/alice/.aida/host-agent.sock.
+      HOST_AGENT_SOCKET: ${HOME}/.aida/host-agent.sock
+      HOST_AGENT_TOKEN_PATH: ${HOME}/.aida/host-agent.token
+      # Workspace root is the real host path — stored verbatim in the DB as
+      # assessment.workspace_path. The LLM writes commands that reference
+      # this path (e.g. `nmap -oN $workspace_path/nmap.txt`) and they work
+      # natively on the host. No translation needed.
+      LOCALHOST_WORKSPACE_BASE: ${HOME}/.aida/workspaces
+      # Exposed for workspace_service so it can resolve the host-side path
+      # even inside the backend container (whose own $HOME=/root).
+      AIDA_HOST_HOME: ${HOME}
+    volumes:
+      # Identity mount of ~/.aida — every path under it (socket, token,
+      # workspaces, deployment-mode) resolves to the same absolute path in
+      # both the host and the backend container. This lets us store the
+      # real host path in the DB and use it verbatim both when executing
+      # on the host (via host-agent) and when inspecting the filesystem
+      # from inside the backend container (e.g. tree_generator).
+      - ${HOME}/.aida:${HOME}/.aida:z
+    # !override replaces (not merges) the base depends_on. The base file
+    # declares a hard dependency on docker-proxy, which we disable below;
+    # without this override compose would reject the project with
+    # "service 'backend' depends on undefined service 'docker-proxy'".
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+
+  # Docker-proxy exists to let the backend docker-exec into aida-pentest.
+  # In localhost mode neither exists — park the service behind a profile
+  # that's never activated so docker compose skips it entirely.
+  docker-proxy:
+    profiles:
+      - _disabled_in_localhost_mode
+
+  aida-pentest:
+    profiles:
+      - _disabled_in_localhost_mode

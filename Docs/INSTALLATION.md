@@ -83,6 +83,133 @@ Then in AIDA Settings, make sure your default container is set to match your Exe
 
 ---
 
+## Localhost Mode
+
+For engagements where you want the LLM to operate directly on your host machine instead of inside a pentesting container, AIDA ships a **localhost** deployment mode.
+
+> **This is a power-user feature.** Commands run with your user's privileges against your real filesystem. AIDA defaults to `closed` command approval in this mode so every command requires an explicit click in **Settings → Commands**, but you should still treat localhost mode with the same care as any remote root shell.
+
+### Enable on setup
+
+```bash
+./start.sh --localhost    # switch to localhost mode (persisted)
+./start.sh --container    # switch back to the pentest container (default)
+```
+
+The selected mode is saved in `.aida/deployment-mode` and used on every subsequent `./start.sh` until you change it.
+
+### What changes
+
+| | Container mode (default) | Localhost mode |
+|---|---|---|
+| Command target | `aida-pentest` (or Exegol) via `docker exec` | Your host, via the `aida-host-agent` daemon |
+| Default approval mode | `open` | `closed` — every command requires approval |
+| Workspace location | `~/.aida/workspaces/` bind-mounted into the pentest container | `~/.aida/workspaces/` directly on the host |
+| Services started | postgres, backend, frontend, docker-proxy, aida-pentest | postgres, backend, frontend (no pentest / proxy) |
+
+### Architecture
+
+The Dockerized backend cannot exec commands on the host directly, so localhost mode ships a small daemon (`tools/host_agent.py`) that runs **on the host** and listens on a Unix socket. `docker-compose.localhost.yml` does an **identity bind-mount** of `~/.aida` into the backend container so every path — socket, token, workspaces — resolves to the same absolute path in both views. That way workspace paths written by the LLM (e.g. `nmap -oN ~/.aida/workspaces/foo/nmap.txt`) work natively on the host without any translation.
+
+```
+host                                            backend container
+──────────────                                  ──────────────────
+~/.aida/host-agent.sock          <—identity—>   ~/.aida/host-agent.sock
+~/.aida/host-agent.token  (0600) <—identity—>   ~/.aida/host-agent.token  (RO)
+~/.aida/workspaces/              <—identity—>   ~/.aida/workspaces/
+```
+
+Every request over the socket is authenticated with a shared-secret token (generated on first `./start.sh --localhost`, stored at `~/.aida/host-agent.token`, mode 0600). Commands execute with the user's own UID/GID, so anything the LLM runs has whatever privileges your shell has — no more, no less.
+
+### Host tool prerequisites
+
+Because commands run on the host instead of inside `aida-pentest`, **you must install pentest tooling yourself.** The LLM will attempt to `apt-get`/`pipx install` missing tools on the fly (subject to command approval), but starting with the essentials in place makes the first assessment smoother.
+
+**Baseline (required):**
+
+```bash
+# Debian / Ubuntu / Mint / Kali
+sudo apt update && sudo apt install -y \
+    bash curl wget git jq openssl netcat-openbsd \
+    python3 python3-pip python3-venv \
+    nmap dnsutils whois
+
+# Arch
+sudo pacman -S --needed bash curl wget git jq openssl gnu-netcat \
+    python python-pip nmap bind whois
+
+# Fedora / RHEL
+sudo dnf install -y bash curl wget git jq openssl nmap-ncat \
+    python3 python3-pip nmap bind-utils whois
+```
+
+**Recommended pentest tools (install what you use):**
+
+```bash
+# On Kali these are all preinstalled. Elsewhere:
+
+# Web content discovery
+sudo apt install -y gobuster ffuf wfuzz
+
+# Web scanners
+sudo apt install -y nikto sqlmap wpscan whatweb
+
+# Auth / credential attacks
+sudo apt install -y hydra medusa john hashcat
+
+# Subdomain / recon (Go tools — install via `go install`)
+go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+go install github.com/OJ/gobuster/v3@latest        # if not in apt
+go install github.com/ffuf/ffuf/v2@latest          # if not in apt
+```
+
+**Python libraries the LLM commonly imports** (into the system `python3` — the host-agent invokes it directly, not a venv):
+
+```bash
+# System-wide (Debian family — needs --break-system-packages on 24.04+ or use pipx)
+sudo apt install -y python3-requests python3-bs4 python3-lxml python3-dnspython \
+    python3-cryptography python3-paramiko python3-impacket
+
+# Or via pip if your distro is older
+pip3 install --user requests beautifulsoup4 lxml dnspython cryptography paramiko impacket
+```
+
+**Sanity check** — run this to see what's already there before you start an assessment:
+
+```bash
+for t in nmap gobuster ffuf nikto sqlmap hydra dig whois curl python3; do
+  command -v "$t" >/dev/null && echo "[OK]  $t" || echo "[MISS] $t"
+done
+```
+
+### Verifying the agent
+
+```bash
+# Daemon status
+cat ~/.aida/host-agent.pid
+ps -p "$(cat ~/.aida/host-agent.pid)"
+
+# Logs
+tail -f ~/.aida/host-agent.log
+
+# Socket probe (requires nc with -U)
+echo '{"token":"'"$(cat ~/.aida/host-agent.token)"'","method":"ping"}' \
+  | nc -U ~/.aida/host-agent.sock
+```
+
+### Stopping
+
+`./stop.sh` terminates the host-agent daemon and cleans up its socket automatically. You can also kill it manually:
+
+```bash
+kill "$(cat ~/.aida/host-agent.pid)"
+rm -f ~/.aida/host-agent.sock
+```
+
+---
+
 ## Step 5: Connect Your AI Client
 
 Now you need to hook up AIDA to your AI assistant via MCP.

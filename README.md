@@ -107,6 +107,7 @@ Dashboard: `http://localhost:31337`
 > `./start.sh --dev` — hot reload for contributors
 > `./start.sh --lan` — share across your local network (HTTPS, self-signed)
 > `./start.sh --domain x.com` — public deploy with Let's Encrypt
+> `./start.sh --localhost` — run commands directly on the host (no pentest container) — see [Localhost Mode](Docs/INSTALLATION.md#localhost-mode)
 
 ### Launch the Agent
 

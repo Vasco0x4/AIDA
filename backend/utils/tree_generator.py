@@ -5,17 +5,39 @@ import asyncio
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
+from config import settings
+
 
 async def _run_docker_command(container_name: str, command: str) -> Dict[str, Any]:
-    """Run a command in docker container and return result"""
+    """
+    Run a shell command against the container's filesystem.
+
+    In container mode this shells out to `docker exec`. In localhost mode
+    the workspace path stored on the assessment is the real host path
+    (e.g. /home/alice/.aida/workspaces/foo) and docker-compose.localhost.yml
+    bind-mounts the host's ~/.aida onto the same absolute path inside the
+    backend container — so running the command locally here walks the same
+    inodes the host-agent would. This also keeps us off the privileged
+    docker-proxy path (which is disabled in localhost mode anyway).
+    """
     try:
-        process = await asyncio.create_subprocess_exec(
-            "docker", "exec", container_name, "bash", "-c", command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        if (
+            settings.DEPLOYMENT_MODE == "localhost"
+            and container_name == settings.LOCALHOST_CONTAINER_LABEL
+        ):
+            process = await asyncio.create_subprocess_exec(
+                "bash", "-c", command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                "docker", "exec", container_name, "bash", "-c", command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
         stdout, stderr = await process.communicate()
-        
+
         return {
             "success": process.returncode == 0,
             "stdout": stdout.decode('utf-8', errors='replace').strip(),

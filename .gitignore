@@ -60,6 +60,10 @@ stop-legacy.sh
 /.aida/container-preference
 /.aida/session
 /.aida/api-key
+/.aida/deployment-mode
+
+# CLI venv (top-level) — created by start.sh for MCP/host-agent
+/.venv/
 
 # Docker
 docker-compose.override.yml

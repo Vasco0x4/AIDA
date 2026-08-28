@@ -5,12 +5,28 @@ import asyncio
 import json
 import os
 import platform
+from pathlib import Path
 from typing import Dict, Any, Optional
 
+from config import settings
 from models import Assessment
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _localhost_host_workspace_root() -> str:
+    """
+    Resolve the host-side workspace root for localhost deployment mode.
+
+    The backend container sees the workspaces at /workspace (bind mount from
+    docker-compose.localhost.yml), but the *user* runs a file explorer on
+    the host, so we need to translate container paths back to paths under
+    ~/.aida/workspaces on the host. We read HOME from env when available and
+    fall back to Path.home() for sandboxed environments.
+    """
+    home = os.environ.get("AIDA_HOST_HOME") or os.environ.get("HOME") or str(Path.home())
+    return os.path.join(home, ".aida", "workspaces")
 
 
 class WorkspaceService:
@@ -84,6 +100,21 @@ class WorkspaceService:
             Example: {"host_path": "~/.exegol/workspaces/exegol-aida", "container_path": "/workspace"}
         """
         logger.info("Getting workspace mount for container", container_name=container_name)
+
+        # In localhost deployment mode there is no Docker container — the
+        # "container_name" stored on the assessment is the synthetic label
+        # (e.g. "localhost"). Return a mount mapping that translates the
+        # backend-container view (/workspace) back to the real host path
+        # under ~/.aida/workspaces, so the frontend can open it in the file
+        # explorer.
+        if (
+            settings.DEPLOYMENT_MODE == "localhost"
+            and container_name == settings.LOCALHOST_CONTAINER_LABEL
+        ):
+            return {
+                "host_path": _localhost_host_workspace_root(),
+                "container_path": settings.LOCALHOST_WORKSPACE_BASE,
+            }
 
         result = await self._run_command([
             "docker", "inspect", container_name,
@@ -203,6 +234,21 @@ class WorkspaceService:
         Returns:
             True if path exists and is a directory inside the container
         """
+        # Localhost mode: validate against the bind-mount path visible inside
+        # the backend container. /workspace is mounted from the host's
+        # ~/.aida/workspaces so os.path.isdir works without talking to Docker.
+        if (
+            settings.DEPLOYMENT_MODE == "localhost"
+            and container_name == settings.LOCALHOST_CONTAINER_LABEL
+        ):
+            exists = os.path.isdir(container_path)
+            logger.debug(
+                "Validated workspace existence on host filesystem",
+                container_path=container_path,
+                exists=exists
+            )
+            return exists
+
         result = await self._run_command([
             "docker", "exec", container_name, "test", "-d", container_path
         ])

@@ -48,6 +48,34 @@ class AidaMCPService:
                 pass
         return None
 
+    @staticmethod
+    def _read_deployment_mode() -> str:
+        """Read persisted deployment mode.
+
+        Resolution order:
+          1. AIDA_DEPLOYMENT_MODE env var (set by start.sh / test harness).
+          2. .aida/deployment-mode file in the AIDA project root.
+          3. "container" (default).
+
+        The MCP server is launched by the user's LLM client (e.g. Claude
+        Desktop) which won't inherit start.sh's environment — the file-based
+        fallback lets us stay in sync across independent processes.
+        """
+        import os
+        env_val = os.getenv("AIDA_DEPLOYMENT_MODE")
+        if env_val in ("container", "localhost"):
+            return env_val
+        aida_root = Path(__file__).resolve().parents[3]
+        mode_file = aida_root / ".aida" / "deployment-mode"
+        try:
+            if mode_file.exists():
+                value = mode_file.read_text().strip()
+                if value in ("container", "localhost"):
+                    return value
+        except OSError:
+            pass
+        return "container"
+
     def __init__(self, backend_url: str = None):
         # Load backend URL from environment or use default
         import os
@@ -56,6 +84,12 @@ class AidaMCPService:
         self.current_assessment_id: Optional[int] = None
         self.current_assessment_name: Optional[str] = None
         self.http_client: Optional[httpx.AsyncClient] = None
+
+        # Deployment mode: "container" (docker exec) or "localhost" (host
+        # agent). Must match the backend's DEPLOYMENT_MODE or command
+        # execution will target the wrong place.
+        self.deployment_mode: str = self._read_deployment_mode()
+        self.localhost_label: str = os.getenv("LOCALHOST_CONTAINER_LABEL", "localhost")
 
         # Docker/Container management
         self.current_container: Optional[str] = None
@@ -96,31 +130,38 @@ class AidaMCPService:
             self.http_client = httpx.AsyncClient(timeout=120.0, headers=headers)
 
         if not self.is_initialized:
-            file_log.info("Auto-detecting pentesting containers...")
-            containers = await self.discover_containers()
-
-            # Look for the configured default container first
-            claude_container = next(
-                (c for c in containers if c["name"] == self.claude_container_name),
-                None
-            )
-
-            if claude_container:
-                self.current_container = self.claude_container_name
-                file_log.info(f"Auto-selected container: {self.claude_container_name}")
+            if self.deployment_mode == "localhost":
+                # Single-target mode — nothing to discover. Skip straight to
+                # the synthetic label so downstream calls have something to
+                # use in CommandHistory / UI filters.
+                self.current_container = self.localhost_label
+                file_log.info("Localhost deployment — target set to %s", self.localhost_label)
             else:
-                # Look for running containers first
-                running_containers = [c for c in containers if "running" in c["status"].lower()]
-                if running_containers:
-                    self.current_container = running_containers[0]["name"]
-                    file_log.info(f"Auto-selected running container: {self.current_container}")
-                elif containers:
-                    self.current_container = containers[0]["name"]
-                    file_log.info(f"Auto-selected first available container: {self.current_container}")
-                else:
-                    # Fallback: trust the configured default exists
+                file_log.info("Auto-detecting pentesting containers...")
+                containers = await self.discover_containers()
+
+                # Look for the configured default container first
+                claude_container = next(
+                    (c for c in containers if c["name"] == self.claude_container_name),
+                    None
+                )
+
+                if claude_container:
                     self.current_container = self.claude_container_name
-                    file_log.info(f"No containers discovered, defaulting to: {self.claude_container_name}")
+                    file_log.info(f"Auto-selected container: {self.claude_container_name}")
+                else:
+                    # Look for running containers first
+                    running_containers = [c for c in containers if "running" in c["status"].lower()]
+                    if running_containers:
+                        self.current_container = running_containers[0]["name"]
+                        file_log.info(f"Auto-selected running container: {self.current_container}")
+                    elif containers:
+                        self.current_container = containers[0]["name"]
+                        file_log.info(f"Auto-selected first available container: {self.current_container}")
+                    else:
+                        # Fallback: trust the configured default exists
+                        self.current_container = self.claude_container_name
+                        file_log.info(f"No containers discovered, defaulting to: {self.claude_container_name}")
 
             self.is_initialized = True
 
@@ -407,7 +448,7 @@ class AidaMCPService:
             return "success"
 
     async def check_tool_availability(self, tool_name: str) -> bool:
-        """Check if a tool is available in the container"""
+        """Check if a tool is available in the container (or on the host)."""
         if not self.current_container:
             return False
 
@@ -417,10 +458,14 @@ class AidaMCPService:
             return self.tool_cache[cache_key]
 
         try:
-            result = await self._run_command([
-                "docker", "exec", self.current_container, "bash", "-c",
-                f"source /root/.bashrc 2>/dev/null && which {tool_name}"
-            ])
+            if self.deployment_mode == "localhost" and self.current_container == self.localhost_label:
+                # Look the tool up on the host's PATH. No docker involved.
+                result = await self._run_command(["which", tool_name])
+            else:
+                result = await self._run_command([
+                    "docker", "exec", self.current_container, "bash", "-c",
+                    f"source /root/.bashrc 2>/dev/null && which {tool_name}"
+                ])
 
             available = result["success"]
             self.tool_cache[cache_key] = available
@@ -434,6 +479,11 @@ class AidaMCPService:
         """Validate and potentially start the current container"""
         if not self.current_container:
             return {"success": False, "error": "No container selected"}
+
+        # Localhost mode has no container to validate — the backend has
+        # already verified host-agent reachability during its own startup.
+        if self.deployment_mode == "localhost" and self.current_container == self.localhost_label:
+            return {"success": True, "status": "localhost"}
 
         try:
             # Check container status
@@ -583,6 +633,23 @@ class AidaMCPService:
         """Discover Exegol containers with intelligent caching"""
         current_time = time.time()
 
+        # Localhost mode: the "container" is the host itself. Return a
+        # synthetic entry so any caller that iterates containers keeps
+        # working without special-casing the mode.
+        if self.deployment_mode == "localhost":
+            entry = {
+                "name": self.localhost_label,
+                "image": "(host)",
+                "status": "running",
+                "id": "localhost",
+                "created": "",
+                "ports": [],
+                "source": "localhost",
+            }
+            self.containers_cache = [entry]
+            self.cache_timestamp = current_time
+            return self.containers_cache
+
         if (not force_refresh and
                 self.containers_cache and
                 (current_time - self.cache_timestamp) < self.cache_ttl):
@@ -655,12 +722,18 @@ class AidaMCPService:
         start_time = time.time()
 
         try:
-            # Properly source the environment before executing commands
-            wrapped_command = f"source /root/.bashrc 2>/dev/null && {command}"
+            if self.deployment_mode == "localhost" and container_name == self.localhost_label:
+                # Run directly on the host — no docker. We skip the
+                # /root/.bashrc sourcing that container mode uses because
+                # the user's own shell init is already in effect.
+                result = await self._run_command(["bash", "-c", command])
+            else:
+                # Properly source the environment before executing commands
+                wrapped_command = f"source /root/.bashrc 2>/dev/null && {command}"
 
-            result = await self._run_command([
-                "docker", "exec", container_name, "bash", "-c", wrapped_command
-            ])
+                result = await self._run_command([
+                    "docker", "exec", container_name, "bash", "-c", wrapped_command
+                ])
 
             execution_time = time.time() - start_time
 

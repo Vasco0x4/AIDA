@@ -24,12 +24,20 @@ from services.container_service import ContainerService
 from schemas.command import HttpRequestRequest
 from websocket.manager import manager
 from websocket.events import create_event, EventType
+from config import settings as app_settings
 
 router = APIRouter(prefix="/pending-commands", tags=["pending-commands"])
 settings_router = APIRouter(prefix="/command-settings", tags=["command-settings"])
 
-# Default settings
-DEFAULT_EXECUTION_MODE = "open"
+# Default settings.
+# Localhost deployments default to "closed" because every command runs on the
+# user's real host — we want all-hands approval out of the box. Container
+# deployments keep the legacy "open" default since the pentest container is
+# sandboxed.
+def _default_execution_mode() -> str:
+    return "closed" if app_settings.DEPLOYMENT_MODE == "localhost" else "open"
+
+DEFAULT_EXECUTION_MODE = _default_execution_mode()
 DEFAULT_FILTER_KEYWORDS = ["rm", "delete", "drop", "truncate", "sudo", "chmod", "chown", "mkfs", "dd", "format"]
 DEFAULT_TIMEOUT_SECONDS = 30  # 30 seconds
 DEFAULT_HTTP_METHOD_RULES = {}  # All methods inherit global mode by default
@@ -56,7 +64,7 @@ def get_command_settings(db: Session) -> dict:
     ).first()
 
     return {
-        "execution_mode": mode_setting.value if mode_setting else DEFAULT_EXECUTION_MODE,
+        "execution_mode": mode_setting.value if mode_setting else _default_execution_mode(),
         "filter_keywords": json.loads(keywords_setting.value) if keywords_setting else DEFAULT_FILTER_KEYWORDS,
         "timeout_seconds": int(timeout_setting.value) if timeout_setting else DEFAULT_TIMEOUT_SECONDS,
         "http_method_rules": json.loads(http_method_rules_setting.value) if http_method_rules_setting else DEFAULT_HTTP_METHOD_RULES,
@@ -140,7 +148,7 @@ async def get_settings(db: Session = Depends(get_db)):
     except Exception:
         # Return defaults if database error
         return CommandSettingsResponse(
-            execution_mode=DEFAULT_EXECUTION_MODE,
+            execution_mode=_default_execution_mode(),
             filter_keywords=DEFAULT_FILTER_KEYWORDS,
             timeout_seconds=DEFAULT_TIMEOUT_SECONDS
         )

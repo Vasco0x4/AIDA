@@ -414,15 +414,25 @@ async def resolve_workspace_path(
             container_path=container_path
         )
         
-        # Check if container is running
-        container_status_result = await workspace_service._run_command([
-            "docker", "inspect", container_name, "--format", "{{.State.Status}}"
-        ])
-        
-        container_running = (
-            container_status_result["returncode"] == 0 and
-            container_status_result["stdout"].strip() == "running"
-        )
+        # Check if the execution target is up. In localhost mode there's no
+        # Docker container — the equivalent liveness signal is the host-agent
+        # daemon holding its Unix socket, so we short-circuit to True when the
+        # backend can reach the agent (which is required for the stack to run
+        # in the first place, so this is effectively always True here).
+        if (
+            settings.DEPLOYMENT_MODE == "localhost"
+            and container_name == settings.LOCALHOST_CONTAINER_LABEL
+        ):
+            import os as _os
+            container_running = _os.path.exists(settings.HOST_AGENT_SOCKET)
+        else:
+            container_status_result = await workspace_service._run_command([
+                "docker", "inspect", container_name, "--format", "{{.State.Status}}"
+            ])
+            container_running = (
+                container_status_result["returncode"] == 0 and
+                container_status_result["stdout"].strip() == "running"
+            )
         
         # Resolve to host path
         host_path = await workspace_service.get_host_workspace_path(
