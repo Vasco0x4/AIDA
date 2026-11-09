@@ -3,6 +3,7 @@
 # errors) — style-only rules stay off until the codebase is gradually cleaned.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
