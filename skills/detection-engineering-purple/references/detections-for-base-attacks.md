@@ -103,7 +103,7 @@ Format per entry: **Technique (ATT&CK) — skill it comes from** → telemetry �
 - **Logic**: a machine/user authenticating from an IP that isn't theirs;
   simultaneous auth to LDAP/SMB from a single relay host to many targets.
 - **Pyramid**: behavior. Remediation-adjacent: alert on **SMB/LDAP signing not
-  required**. 
+  required**.
 
 ### LLMNR/NBT-NS/mDNS poisoning — T1557.001 (initial access)
 - **Telemetry**: network — anomalous LLMNR (UDP 5355) / NBT-NS (137) **responses**;

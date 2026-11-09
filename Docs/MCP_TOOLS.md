@@ -118,6 +118,7 @@ codex mcp add aida --url http://localhost:8000/mcp \
 | | | `list_recon(data_type="subdomain", limit=100)` | Filter recon by type |
 | **Execution** | `execute` | `execute(command="nmap -sV 10.0.0.1")` | Run shell command in Exegol |
 | | | `execute(command="...", phase="recon")` | Run with phase context |
+| | `host_execute` | `host_execute(action="echo", args=["hello"], working_directory="/srv/aida-work", targets=[])` | Optional policy-constrained direct host argv; disabled and hidden by default |
 | | `python_exec` | `python_exec(code="import socket; ...")` | Execute Python code in Exegol |
 | | | `python_exec(code="...", phase="recon")` | Run Python with phase context |
 | | `http_request` | `http_request(method="GET", url="https://...")` | Make HTTP request from Exegol |
@@ -150,6 +151,8 @@ codex mcp add aida --url http://localhost:8000/mcp \
 | [Credentials](#credentials-management) | 2 | Store and retrieve creds |
 
 ---
+
+`host_execute` is not part of the container execution flow. It requires explicit executable, working-directory, and (for network tools) target policy. See [Reliability and security operations](RELIABILITY_OPERATIONS.md#opt-in-direct-host-mcp-execution) for configuration and threat-model limitations.
 
 ## Assessment Management
 

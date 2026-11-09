@@ -126,7 +126,7 @@ See each attack skill's OPSEC note; when in doubt, ask.
 
 ## Quick self-check before firing any payload
 
-1. Is this target in scope and in the window? 
+1. Is this target in scope and in the window?
 2. Could this delete, corrupt, or change data/config? → don't.
 3. Could this reduce availability or lock out users? → don't.
 4. Could this touch real users or their data? → minimize/avoid.

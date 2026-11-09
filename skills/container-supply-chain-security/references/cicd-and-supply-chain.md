@@ -119,7 +119,7 @@ signature use) to show the `sub`/`aud`, without actually assuming the role.
 misconfigs allowing role assumption from unintended repos/branches.
 **Remediation:** minimal `permissions:`; tightly scope OIDC trust to
 `repo:ORG/REPO:ref:refs/heads/main` (and environment); short-lived tokens; no
-long-lived cloud keys in CI. 
+long-lived cloud keys in CI.
 
 ### A.4 Self-hosted runner compromise — CICD-SEC-5/-7
 
