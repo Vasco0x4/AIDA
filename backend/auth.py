@@ -40,6 +40,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Bearer token scheme
 security = HTTPBearer(auto_error=False)
 
+# --- RBAC (E2): role model + hierarchy --------------------------------------
+# viewer  → read-only
+# auditor → full operational access (tasks, scans, findings)
+# admin   → + users, AI-model credentials, API keys, settings, runner
+# Legacy "user" rows are migrated to "auditor" at startup (database.py).
+ROLES = ("admin", "auditor", "viewer")
+ROLE_PATTERN = r"^(admin|auditor|viewer)$"
+
 
 # --- Pydantic Schemas ---
 
@@ -47,7 +55,7 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=7)
     email: Optional[str] = None
-    role: str = Field("user", pattern="^(admin|user)$")
+    role: str = Field("auditor", pattern=ROLE_PATTERN)
 
 
 class UserLogin(BaseModel):
@@ -67,15 +75,20 @@ class UserResponse(BaseModel):
     is_active: bool
     role: str
     must_change_password: bool
+    otp_enabled: bool = False
+    auth_provider: str = "local"
 
     class Config:
         from_attributes = True
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None
     token_type: str = "bearer"
-    user: UserResponse
+    user: Optional[UserResponse] = None
+    otp_required: bool = False
+    otp_enabled: bool = False
+    challenge_id: Optional[str] = None
 
 
 # --- Core Functions ---
@@ -124,10 +137,15 @@ def decode_token(token: str) -> dict:
 # --- FastAPI Dependencies ---
 
 def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
 ) -> User:
-    """Dependency: extract and validate JWT, return User object."""
+    """Dependency: extract and validate JWT, return User object.
+
+    If the RBAC middleware already resolved the user for this request
+    (``request.state.user``), reuse it instead of a second DB load.
+    """
 
     if credentials is None:
         raise HTTPException(
@@ -144,6 +162,10 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    user = getattr(request.state, "user", None)
+    if user is not None and str(user.id) == payload.get("sub"):
+        return user
+
     user = db.query(User).filter(User.id == int(payload["sub"])).first()
     if user is None or not user.is_active:
         raise HTTPException(
@@ -152,6 +174,21 @@ def get_current_user(
         )
 
     return user
+
+
+def require_role(*roles: str):
+    """Dependency factory: allow any of the given roles."""
+    allowed = set(roles)
+
+    def _checker(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of roles: {', '.join(sorted(allowed))}",
+            )
+        return current_user
+
+    return _checker
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:

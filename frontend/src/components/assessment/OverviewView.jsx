@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 import { useMemo } from 'react';
 import { Shield, AlertTriangle, TrendingUp, Target } from '../icons';
 import CardsTable from './CardsTable';
@@ -19,18 +20,18 @@ const OverviewView = ({ cards, assessmentId, onUpdate }) => {
     const totalCards = cards.length;
     
     // Recent activity (last 7 days)
-    const sevenDaysAgo = new Date();
+    const sevenDaysAgo = utcDate();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
     const recentCards = cards.filter(card => 
-      new Date(card.created_at) > sevenDaysAgo
+      utcDate(card.created_at) > sevenDaysAgo
     );
     
-    const last24h = new Date();
+    const last24h = utcDate();
     last24h.setDate(last24h.getDate() - 1);
     
     const last24hCards = cards.filter(card => 
-      new Date(card.created_at) > last24h
+      utcDate(card.created_at) > last24h
     );
     
     return {
@@ -57,7 +58,7 @@ const OverviewView = ({ cards, assessmentId, onUpdate }) => {
         const aOrder = SEVERITY_ORDER[a.severity] || 0;
         const bOrder = SEVERITY_ORDER[b.severity] || 0;
         if (aOrder !== bOrder) return bOrder - aOrder;
-        return new Date(b.created_at) - new Date(a.created_at);
+        return utcDate(b.created_at) - utcDate(a.created_at);
       })
       .slice(0, 5); // Top 5
   }, [cards]);

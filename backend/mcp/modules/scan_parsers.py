@@ -16,7 +16,6 @@ def parse_scan_output(command: str, result: Dict[str, Any], max_length: int = 50
         max_length: Maximum length for generic output truncation (default: 5000, -1 for unlimited)
     """
     stdout = result.get("stdout", "")
-    stderr = result.get("stderr", "")
     cmd_lower = command.lower()
 
     # NMAP Parser
@@ -61,7 +60,7 @@ def parse_nmap_output(stdout: str, result: Dict[str, Any]) -> str:
             services.append(line.strip())
 
     # Build summary
-    output = f"**Nmap Scan Results:**\n\n"
+    output = "**Nmap Scan Results:**\n\n"
 
     if open_ports:
         output += f"**Open Ports ({len(open_ports)}):**\n"
@@ -73,7 +72,7 @@ def parse_nmap_output(stdout: str, result: Dict[str, Any]) -> str:
         output += "No open ports found.\n"
 
     if services:
-        output += f"\n**Services Detected:**\n"
+        output += "\n**Services Detected:**\n"
         for service in services[:5]:
             output += f"  {service}\n"
 
@@ -90,7 +89,7 @@ def parse_gobuster_output(stdout: str, result: Dict[str, Any]) -> str:
         if line.startswith('/') or 'Status:' in line:
             found_paths.append(line.strip())
 
-    output = f"**Gobuster Scan Results:**\n\n"
+    output = "**Gobuster Scan Results:**\n\n"
 
     if found_paths:
         output += f"**Found Paths ({len(found_paths)}):**\n"
@@ -129,7 +128,7 @@ def parse_nikto_output(stdout: str, result: Dict[str, Any]) -> str:
         if line.startswith('+') and ('OSVDB' in line or 'CVE' in line or 'vuln' in line.lower()):
             findings.append(line.strip())
 
-    output = f"**Nikto Scan Results:**\n\n"
+    output = "**Nikto Scan Results:**\n\n"
 
     if findings:
         output += f"**Potential Issues ({len(findings)}):**\n"
@@ -163,7 +162,7 @@ def parse_nuclei_output(stdout: str, result: Dict[str, Any]) -> str:
         elif '[low]' in line.lower() or '[info]' in line.lower():
             low.append(line.strip())
 
-    output = f"**Nuclei Scan Results:**\n\n"
+    output = "**Nuclei Scan Results:**\n\n"
 
     if critical:
         output += f"**🔴 CRITICAL ({len(critical)}):**\n"
@@ -191,7 +190,7 @@ def parse_subdomain_output(stdout: str, result: Dict[str, Any]) -> str:
     lines = stdout.split('\n')
     subdomains = [line.strip() for line in lines if line.strip() and '.' in line]
 
-    output = f"**Subdomain Enumeration Results:**\n\n"
+    output = "**Subdomain Enumeration Results:**\n\n"
 
     if subdomains:
         output += f"**Found {len(subdomains)} subdomains:**\n"
@@ -231,7 +230,7 @@ def parse_generic_output(stdout: str, result: Dict[str, Any], max_length: int = 
                 # Show stderr as it contains important info (like grep binary file warning)
                 response = f"No output (stderr: {stderr[:500]})\n"
             else:
-                response = f"Command completed (no output)\n"
+                response = "Command completed (no output)\n"
     else:
         stderr = result.get("stderr", "Unknown error")
         response = f"ERROR: {stderr[:500]}"

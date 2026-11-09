@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 import { useEffect, useState } from 'react';
 import {
   Key,
@@ -17,6 +18,12 @@ import {
   getMcpSetting,
   updateMcpSetting,
 } from '../../services/apiKeyService';
+import {
+  MCP_CLIENT_ADAPTERS,
+  buildClientSnippet,
+  getMcpClientAdapter,
+  resolveMcpUrl,
+} from '../../services/mcpClients';
 
 const POLICY_OPTIONS = [
   { value: 'localhost', label: 'Localhost only' },
@@ -27,7 +34,7 @@ const POLICY_OPTIONS = [
 function formatDate(iso) {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleString();
+    return utcDate(iso).toLocaleString();
   } catch {
     return iso;
   }
@@ -141,48 +148,14 @@ function McpAccessSection() {
   }
 
   function mcpUrl() {
-    const host =
-      savedPolicy === 'localhost' ? 'localhost' : (window?.location?.hostname || 'localhost');
-    return `http://${host}:8000/mcp`;
+    return resolveMcpUrl(savedPolicy, {
+      configuredUrl: import.meta.env.VITE_MCP_URL || '',
+      port: import.meta.env.VITE_MCP_PORT || '8000',
+    });
   }
 
   function clientSnippet(key) {
-    const url = mcpUrl();
-    const token = key.full_key;
-    if (clientTab === 'codex') {
-      return `export AIDA_MCP_API_KEY="${token}"
-codex mcp add aida --url ${url} --bearer-token-env-var AIDA_MCP_API_KEY`;
-    }
-    if (clientTab === 'claude-desktop') {
-      return JSON.stringify(
-        {
-          mcpServers: {
-            aida: {
-              url,
-              headers: { Authorization: `Bearer ${token}` },
-            },
-          },
-        },
-        null,
-        2
-      );
-    }
-    if (clientTab === 'cursor') {
-      return JSON.stringify(
-        {
-          mcpServers: {
-            aida: {
-              url,
-              headers: { Authorization: `Bearer ${token}` },
-            },
-          },
-        },
-        null,
-        2
-      );
-    }
-    // claude-code default
-    return `claude mcp add --transport http aida ${url} --header "Authorization: Bearer ${token}"`;
+    return buildClientSnippet(clientTab, mcpUrl(), key.full_key);
   }
 
   const policyDirty = policy !== savedPolicy;
@@ -425,13 +398,8 @@ codex mcp add aida --url ${url} --bearer-token-env-var AIDA_MCP_API_KEY`;
             </div>
 
             <div>
-              <div className="flex gap-1 border-b border-neutral-200 dark:border-neutral-700 mb-2">
-                {[
-                  { id: 'claude-code', label: 'Claude Code' },
-                  { id: 'codex', label: 'Codex' },
-                  { id: 'claude-desktop', label: 'Claude Desktop' },
-                  { id: 'cursor', label: 'Cursor' },
-                ].map((t) => (
+              <div className="flex flex-wrap gap-1 border-b border-neutral-200 dark:border-neutral-700 mb-2">
+                {MCP_CLIENT_ADAPTERS.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setClientTab(t.id)}
@@ -445,6 +413,9 @@ codex mcp add aida --url ${url} --bearer-token-env-var AIDA_MCP_API_KEY`;
                   </button>
                 ))}
               </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
+                {getMcpClientAdapter(clientTab).description}
+              </p>
               <div className="bg-neutral-900 text-neutral-100 rounded-md p-3 relative">
                 <pre className="text-[11px] font-mono whitespace-pre-wrap break-all">
                   {clientSnippet(revealedKey)}

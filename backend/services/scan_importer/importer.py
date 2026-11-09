@@ -72,7 +72,7 @@ class ScanImporter:
                 success=False,
                 scan_type=ScanType.UNKNOWN,
                 filename=filename,
-                error=f"Unknown scan format. Supported: nmap XML, nuclei JSON, ffuf JSON"
+                error="Unknown scan format. Supported: nmap XML, nuclei JSON, ffuf JSON"
             )
         
         return parser.parse(content, filename)

@@ -1,3 +1,4 @@
+import { utcDate } from '../utils/utcDate';
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Terminal, Clock, Search, ChevronDown, ChevronRight, Check, X, Plus, Activity, TrendingUp, AlertCircle, BarChart3 } from '../components/icons';
@@ -49,6 +50,11 @@ const Commands = () => {
   const [newKeyword, setNewKeyword] = useState('');
   const [savingMode, setSavingMode] = useState(false);
   const [httpMethodRules, setHttpMethodRules] = useState({});
+  // E4 — PoC approval chain (exploit-class commands)
+  const [exploitApproval, setExploitApproval] = useState('on');
+  const [exploitAdminOnly, setExploitAdminOnly] = useState(true);
+  const [exploitTimeout, setExploitTimeout] = useState(600);
+  const [savingExploit, setSavingExploit] = useState(false);
 
   // Approval state
   const [processingId, setProcessingId] = useState(null);
@@ -141,6 +147,9 @@ const Commands = () => {
       setExecutionMode(settings.execution_mode || 'open');
       setFilterKeywords(settings.filter_keywords || []);
       setHttpMethodRules(settings.http_method_rules || {});
+      setExploitApproval(settings.exploit_approval || 'on');
+      setExploitAdminOnly(settings.exploit_admin_approval !== false);
+      setExploitTimeout(settings.exploit_approval_timeout || 600);
     } catch (error) {
       // console.error('Failed to load settings:', error);
     }
@@ -155,6 +164,21 @@ const Commands = () => {
       setPendingCount(data.pending_count || 0);
     } catch (error) {
       // console.error('Failed to load pending commands:', error);
+    }
+  };
+
+  const saveExploitSettings = async (patch) => {
+    setSavingExploit(true);
+    try {
+      const s = await commandSettingsService.updateCommandSettings(patch);
+      setExploitApproval(s.exploit_approval || 'on');
+      setExploitAdminOnly(s.exploit_admin_approval !== false);
+      setExploitTimeout(s.exploit_approval_timeout || 600);
+    } catch (error) {
+      // revert to server truth on failure
+      loadSettings();
+    } finally {
+      setSavingExploit(false);
     }
   };
 
@@ -362,8 +386,8 @@ const Commands = () => {
 
   const formatTime = (dateStr) => {
     if (!dateStr) return '—';
-    const date = new Date(dateStr);
-    const now = new Date();
+    const date = utcDate(dateStr);
+    const now = utcDate();
     const diff = Math.floor((now - date) / 1000);
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
@@ -697,6 +721,57 @@ const Commands = () => {
             </div>
           </div>
 
+          {/* Exploit-class PoC approval chain (E4) */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-neutral-500">Exploit-class PoC approval:</span>
+            <div className="flex items-center text-xs border border-red-200 dark:border-red-900 rounded-lg overflow-hidden">
+              {['on', 'off'].map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => saveExploitSettings({ exploit_approval: mode })}
+                  disabled={savingExploit}
+                  className={`px-3 py-1.5 transition-colors ${exploitApproval === mode
+                    ? 'bg-red-600 text-white'
+                    : 'text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                    }`}
+                >
+                  {mode === 'on' ? 'Approval chain ON' : 'OFF'}
+                </button>
+              ))}
+            </div>
+            {exploitApproval === 'on' && (
+              <>
+                <label className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
+                  <input
+                    type="checkbox"
+                    checked={exploitAdminOnly}
+                    onChange={(e) => saveExploitSettings({ exploit_admin_approval: e.target.checked })}
+                    disabled={savingExploit}
+                  />
+                  admin-only approval
+                </label>
+                <label className="inline-flex items-center gap-1 text-xs text-neutral-500">
+                  timeout
+                  <input
+                    type="number"
+                    min="30"
+                    max="86400"
+                    value={exploitTimeout}
+                    onChange={(e) => setExploitTimeout(parseInt(e.target.value, 10) || 600)}
+                    onBlur={() => (exploitTimeout >= 30 && exploitTimeout <= 86400)
+                      && saveExploitSettings({ exploit_approval_timeout: exploitTimeout })}
+                    className="w-16 px-1.5 py-0.5 border border-neutral-200 dark:border-neutral-700 rounded bg-transparent"
+                    disabled={savingExploit}
+                  />
+                  s
+                </label>
+              </>
+            )}
+            <span className="text-[11px] text-neutral-400">
+              sqlmap / metasploit / brute-force / reverse shells → agent pauses for approval
+            </span>
+          </div>
+
           {/* Keywords (only show in filter mode) */}
           {executionMode === 'filter' && (
             <div className="flex items-center gap-3 flex-wrap">
@@ -802,9 +877,19 @@ const Commands = () => {
                         >
                           <td><div className={`w-2 h-2 rounded-full ${getStatusDot(cmd.status)}`} /></td>
                           <td>
-                            <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
-                              {getCommandPreview(cmd.command, cmd.matched_keywords)}
-                            </code>
+                            <span className="inline-flex items-center gap-1.5">
+                              {cmd.risk_level === 'high' && (
+                                <span
+                                  className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-red-600 text-white rounded"
+                                  title={`Exploit-class (${cmd.risk_reason || 'PoC approval chain'}) — admin-only approval`}
+                                >
+                                  exploit
+                                </span>
+                              )}
+                              <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
+                                {getCommandPreview(cmd.command, cmd.matched_keywords)}
+                              </code>
+                            </span>
                           </td>
                           <td className="text-sm text-neutral-600 dark:text-neutral-400">{cmd.assessment_name}</td>
                           <td>
@@ -903,9 +988,16 @@ const Commands = () => {
                           >
                             <td><div className={`w-2 h-2 rounded-full ${getStatusDot(cmd.status)}`} /></td>
                             <td>
-                              <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
-                                {getCommandPreview(cmd.command)}
-                              </code>
+                              <span className="inline-flex items-center gap-1.5">
+                                {cmd.risk_level === 'high' && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-red-600 text-white rounded">
+                                    exploit
+                                  </span>
+                                )}
+                                <code className="text-xs font-mono text-neutral-700 dark:text-neutral-300">
+                                  {getCommandPreview(cmd.command)}
+                                </code>
+                              </span>
                             </td>
                             <td className="text-sm text-neutral-600 dark:text-neutral-400">{cmd.assessment_name}</td>
                             <td>

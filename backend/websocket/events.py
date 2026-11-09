@@ -52,6 +52,20 @@ class EventType(str, Enum):
     FOLDER_UPDATED = "folder_updated"
     FOLDER_DELETED = "folder_deleted"
 
+    # Task / Kanban events
+    TASK_CREATED = "task_created"
+    TASK_UPDATED = "task_updated"
+    TASK_DELETED = "task_deleted"
+    TASK_MOVED = "task_moved"
+
+    # Autonomous agent events (streamed while a task runs)
+    AGENT_STEP = "agent_step"
+    AGENT_LOG = "agent_log"
+
+    # Subdomain-takeover scan progress (streamed while a scan runs)
+    TAKEOVER_PROGRESS = "takeover_progress"
+    TAKEOVER_DONE = "takeover_done"
+
     # System events
     SYSTEM_STATUS_CHANGED = "system_status_changed"
     ERROR = "error"
@@ -204,6 +218,29 @@ def event_credential_added(assessment_id: int, credential_data: dict) -> dict:
         EventType.CREDENTIAL_ADDED,
         {"credential": credential_data},
         assessment_id=assessment_id
+    )
+
+
+def event_task_created(task_data: dict) -> dict:
+    """Create task_created event (broadcast globally to the board)."""
+    return create_event(EventType.TASK_CREATED, {"task": task_data})
+
+
+def event_task_updated(task_id: int, task_data: dict) -> dict:
+    """Create task_updated event."""
+    return create_event(EventType.TASK_UPDATED, {"task_id": task_id, "task": task_data})
+
+
+def event_task_deleted(task_id: int) -> dict:
+    """Create task_deleted event."""
+    return create_event(EventType.TASK_DELETED, {"task_id": task_id})
+
+
+def event_task_moved(task_id: int, status: str, position: int) -> dict:
+    """Create task_moved event (column/position change)."""
+    return create_event(
+        EventType.TASK_MOVED,
+        {"task_id": task_id, "status": status, "position": position},
     )
 
 

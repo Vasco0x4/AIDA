@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- context hooks are the public API */
 import { createContext, useContext, useState, useEffect } from 'react';
 import apiClient from '../services/api';
 

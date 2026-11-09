@@ -1,0 +1,66 @@
+# Nightly database backup INSIDE the cluster (opt-in — not part of the base
+# kustomization):
+#
+#   kubectl apply -f k8s/backup-cronjob.yaml
+#
+# Dumps the aida_assessments database into a PVC every night at 02:17 (off the
+# busy :00) and keeps the last 7 dumps. For serious retention ship the dumps
+# off-cluster (restic/S3) — a PVC on the same node as the database is NOT a
+# backup against node loss.
+#
+# Postgres credentials come from the same aida-secrets Secret as the backend.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aida-backups
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aida-backup
+spec:
+  schedule: "17 2 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          activeDeadlineSeconds: 1800
+          containers:
+            - name: pg-dump
+              image: postgres:16-alpine
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: aida-secrets
+                      key: POSTGRES_PASSWORD
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  pg_dump -h postgres -U aida -Fc -d aida_assessments \
+                    -f /backups/aida-$TS.dump
+                  echo "dumped aida-$TS.dump"
+                  # keep the newest 7
+                  ls -1t /backups/aida-*.dump | tail -n +8 | xargs -r rm --
+                  ls -lh /backups
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { memory: 512Mi }
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: aida-backups

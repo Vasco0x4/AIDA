@@ -4,12 +4,15 @@ Handles: load_assessment, add_*, list_*, update_*, execute, pentesting tools
 """
 import asyncio
 import json
+import logging
 import time
-from typing import List, Optional
+from typing import List
 from mcp.types import TextContent
 from scan_parsers import parse_scan_output
+from mcp_host_execution import get_host_execution_service
+from services.host_execution import HostExecutionError, sanitize_args
 # CVSS 4.0 derivation lives in utils.cvss (shared with the ASVS requirements API).
-from utils.cvss import calculate_cvss4_score as _calculate_cvss4_score, score_to_severity as _score_to_severity
+from utils.cvss import calculate_cvss4_score as _calculate_cvss4_score
 
 
 async def _await_command_approval(mcp_service, *, command, phase, matched_keywords,
@@ -125,6 +128,9 @@ async def handle_tool_call(name: str, arguments: dict, mcp_service) -> List[Text
             return await _handle_list_recon(arguments, mcp_service)
 
         # ========== Command Execution ==========
+
+        elif name == "host_execute":
+            return await _handle_host_execute(arguments, mcp_service)
 
         elif name == "execute":
             return await _handle_execute(arguments, mcp_service)
@@ -432,7 +438,7 @@ async def _handle_load_assessment(arguments: dict, mcp_service) -> List[TextCont
                 # Show stderr if available
                 if cmd.get('stderr'):
                     response += f"Error: {cmd['stderr']}\n"
-    except Exception as e:
+    except Exception:
         # Continue without commands
         pass
 
@@ -991,6 +997,78 @@ async def _handle_list_recon(arguments: dict, mcp_service) -> List[TextContent]:
 
 # ========== Command Execution Handler ==========
 
+def _audit_host_execute(action, operation: dict) -> None:
+    """Best-effort structured audit without requiring MCP constructor changes."""
+    safe_action = sanitize_args([action[:256]])[0] if isinstance(action, str) else None
+    detail = {
+        "event": "host_execute",
+        "operation_id": operation.get("operation_id"),
+        "action": operation.get("action", safe_action),
+        "args": operation.get("args", []),
+        "targets": operation.get("targets", []),
+        "working_directory": operation.get("working_directory"),
+        "status": operation.get("status"),
+        "success": operation.get("success", False),
+        "returncode": operation.get("returncode"),
+        "error": operation.get("error"),
+    }
+    try:
+        logging.getLogger("aida-mcp").info(
+            "host_execute audit %s", json.dumps(detail, sort_keys=True),
+        )
+    except Exception:
+        # Auditing must never change the execution result.
+        pass
+
+
+async def _handle_host_execute(arguments: dict, mcp_service) -> List[TextContent]:
+    """Execute a policy-scoped host action without shell-string interpretation."""
+    try:
+        service = get_host_execution_service(mcp_service)
+        action = arguments.get("action")
+        args = arguments.get("args")
+        working_directory = arguments.get("working_directory")
+        targets = arguments.get("targets")
+        if (
+            not isinstance(action, str)
+            or not action
+            or not isinstance(args, list)
+            or not all(isinstance(arg, str) for arg in args)
+            or not isinstance(working_directory, str)
+            or not working_directory
+            or not isinstance(targets, list)
+            or not all(isinstance(target, str) for target in targets)
+        ):
+            raise HostExecutionError(
+                "invalid_arguments",
+                "action, args, working_directory, and targets must use the host_execute schema",
+            )
+        operation = await service.execute(
+            action=action,
+            args=args,
+            working_directory=working_directory,
+            targets=targets,
+        )
+        # Redaction markers can be longer than the secrets they replace. Re-apply
+        # the byte cap to the final redacted text returned over MCP.
+        for stream in ("stdout", "stderr"):
+            value = operation.get(stream) or ""
+            encoded = value.encode("utf-8")
+            if len(encoded) > service.policy.max_output_bytes:
+                operation[stream] = encoded[:service.policy.max_output_bytes].decode(
+                    "utf-8", errors="ignore",
+                )
+                operation[f"{stream}_truncated"] = True
+    except HostExecutionError as exc:
+        operation = {
+            "success": False,
+            "status": "denied",
+            "error": {"code": exc.code, "message": exc.message},
+        }
+    _audit_host_execute(arguments.get("action"), operation)
+    return [TextContent(type="text", text=json.dumps(operation))]
+
+
 async def _handle_execute(arguments: dict, mcp_service) -> List[TextContent]:
     """Handle execute with command approval modes, timeout, credential substitution, and intelligent parsing"""
     command = arguments["command"]
@@ -1013,7 +1091,7 @@ async def _handle_execute(arguments: dict, mcp_service) -> List[TextContent]:
 
         execution_mode = settings.get("execution_mode", "open")
         filter_keywords = settings.get("filter_keywords", [])
-    except Exception as e:
+    except Exception:
         # Default to open mode if settings unavailable
         execution_mode = "open"
         filter_keywords = []
@@ -1447,45 +1525,51 @@ async def _handle_scan(arguments: dict, mcp_service) -> List[TextContent]:
     }
     
     selected_wordlist = WORDLISTS.get(wordlist, WORDLISTS["common"])
-    
-    # Build commands dynamically based on scan type
+
+    # Build commands dynamically based on scan type. Parts are joined so that
+    # unset optional flags never leave double spaces inside the command.
+    def _cmd(*parts: str) -> str:
+        return " ".join(p for p in parts if p)
+
     if scan_type == "nmap_quick":
         # Fast scan with version detection
         port_arg = f"-p {ports}" if ports else "-F"  # -F = fast (top 100 ports)
-        command = f"nmap -sV {port_arg} {extra_flags} {target}".strip()
-        
+        command = _cmd("nmap", "-sV", port_arg, extra_flags, target)
+
     elif scan_type == "nmap_full":
         # Comprehensive scan with all ports
         port_arg = f"-p {ports}" if ports else "-p-"  # All ports
-        command = f"nmap -sS -sV -O -T4 {port_arg} {extra_flags} {target}".strip()
-        
+        command = _cmd("nmap", "-sS -sV -O -T4", port_arg, extra_flags, target)
+
     elif scan_type == "nmap_vuln":
         # Vulnerability script scan
         port_arg = f"-p {ports}" if ports else ""
-        command = f"nmap -sV --script=vuln {port_arg} {extra_flags} {target}".strip()
-        
+        command = _cmd("nmap", "-sV", "--script=vuln", port_arg, extra_flags, target)
+
     elif scan_type == "gobuster":
         # Ensure target has protocol
         url = target if target.startswith(("http://", "https://")) else f"http://{target}"
         ext_arg = f"-x {extensions}" if extensions else ""
-        command = f"gobuster dir -u {url} -w {selected_wordlist} -t {threads} {ext_arg} {extra_flags}".strip()
-        
+        command = _cmd("gobuster", "dir", f"-u {url}", f"-w {selected_wordlist}",
+                       f"-t {threads}", ext_arg, extra_flags)
+
     elif scan_type == "ffuf":
         # Fast web fuzzer - ensure target has FUZZ placeholder or add one
         url = target if target.startswith(("http://", "https://")) else f"http://{target}"
         if "FUZZ" not in url:
             url = f"{url.rstrip('/')}/FUZZ"
         ext_arg = f"-e {extensions}" if extensions else ""
-        command = f"ffuf -u {url} -w {selected_wordlist} -t {threads} {ext_arg} {extra_flags}".strip()
-        
+        command = _cmd("ffuf", f"-u {url}", f"-w {selected_wordlist}",
+                       f"-t {threads}", ext_arg, extra_flags)
+
     elif scan_type == "dirb":
         url = target if target.startswith(("http://", "https://")) else f"http://{target}"
         ext_arg = f"-X .{extensions.replace(',', ',.')}" if extensions else ""
-        command = f"dirb {url} {selected_wordlist} {ext_arg} {extra_flags}".strip()
-        
+        command = _cmd("dirb", url, selected_wordlist, ext_arg, extra_flags)
+
     elif scan_type == "nikto":
-        command = f"nikto -h {target} {extra_flags}".strip()
-        
+        command = _cmd("nikto", "-h", target, extra_flags)
+
     else:
         return [TextContent(type="text", text=f"Unknown scan type: {scan_type}")]
 
@@ -1609,7 +1693,7 @@ async def _handle_credentials_add(arguments: dict, mcp_service) -> List[TextCont
             json=credential_data
         )
         response.raise_for_status()
-        result = response.json()
+        response.json()  # validate JSON, result unused
 
         # Format response
         response_text = f"✅ Credential added: **{name}**\n\n"

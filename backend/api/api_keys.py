@@ -8,12 +8,13 @@ admin router so ownership logic stays co-located with the resource.
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from auth import generate_api_key, get_current_user
 from database import get_db
+from services.audit_service import record as audit
 from models.api_key import ApiKey
 from models.user import User
 
@@ -80,6 +81,7 @@ def list_api_keys(
 @router.post("", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_api_key(
     payload: ApiKeyCreateRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -96,6 +98,8 @@ def create_api_key(
     db.commit()
     db.refresh(row)
 
+    audit(db, action="api_key.created", request=request, actor=current_user,
+          resource_type="api_key", resource_id=row.id, detail={"name": row.name})
     return ApiKeyCreateResponse(
         **_to_summary(row).model_dump(),
         full_key=full,
@@ -105,6 +109,7 @@ def create_api_key(
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 def revoke_api_key(
     key_id: int,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -123,4 +128,6 @@ def revoke_api_key(
     if row.revoked_at is None:
         row.revoked_at = datetime.now(timezone.utc)
         db.commit()
+    audit(db, action="api_key.revoked", request=request, actor=current_user,
+          resource_type="api_key", resource_id=key_id, detail={"name": row.name})
     return None

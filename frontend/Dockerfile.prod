@@ -1,18 +1,25 @@
 # Production Dockerfile — multi-stage build
 # Stage 1: Build the React app
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 # Use relative /api so the build works for any host/IP — Nginx proxies it
+ARG VITE_MCP_PORT=8000
+ARG VITE_MCP_URL=
 ENV VITE_API_URL=/api
+ENV VITE_MCP_PORT=${VITE_MCP_PORT}
+ENV VITE_MCP_URL=${VITE_MCP_URL}
 RUN npm run build
 
-# Stage 2: Serve with Nginx
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Stage 2: Serve with Nginx as an unprivileged user (E5 hardening).
+# nginx-unprivileged runs the master as uid 101 and listens on 8080 —
+# no root anywhere in the runtime image. Port mapping is adjusted at the
+# edge (compose/k8s), internal upstreams are unaffected.
+FROM nginxinc/nginx-unprivileged:alpine
+COPY --from=builder --chown=101:0 /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/ || exit 1

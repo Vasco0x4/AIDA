@@ -19,6 +19,8 @@ class CardBase(BaseModel):
     notes: Optional[str] = None
     proof: Optional[str] = None
     context: Optional[str] = None
+    # E4 compliance mapping override: {"owasp": ["A03:2021"], ...}
+    compliance_refs: Optional[Dict[str, List[str]]] = None
 
 
 class CardCreate(CardBase):
@@ -40,6 +42,7 @@ class CardUpdate(BaseModel):
     notes: Optional[str] = None
     proof: Optional[str] = None
     context: Optional[str] = None
+    compliance_refs: Optional[Dict[str, List[str]]] = None
 
 
 class CardResponse(CardBase):
@@ -48,6 +51,12 @@ class CardResponse(CardBase):
     assessment_id: int
     created_at: datetime
     updated_at: datetime
+    fingerprint: Optional[str] = None
+    lifecycle_status: Optional[str] = "new"
+    first_seen_run_id: Optional[int] = None
+    last_seen_run_id: Optional[int] = None
+    last_seen_at: Optional[datetime] = None
+    seen_count: Optional[int] = 0
 
     model_config = ConfigDict(from_attributes=True)
 

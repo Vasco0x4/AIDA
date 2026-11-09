@@ -1,7 +1,8 @@
 """
 Card SQLAlchemy model (Finding/Observation/Info)
 """
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, Float, ForeignKey, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from database import Base
@@ -32,8 +33,25 @@ class Card(Base):
     proof = Column(Text)
     context = Column(Text)
 
+    # E4 compliance mapping: manual override of the auto-classifier,
+    # {"owasp": ["A03:2021"], "pci": ["6.5.1"]} — framework → codes.
+    compliance_refs = Column(JSONB)
+
+    # Canonical identity across recurring Scan Runs. Mutable triage, severity
+    # and evidence are deliberately excluded from the fingerprint.
+    fingerprint = Column(String(64))
+    lifecycle_status = Column(String(40), nullable=False, default="new", index=True)
+    first_seen_run_id = Column(Integer)
+    last_seen_run_id = Column(Integer)
+    last_seen_at = Column(TIMESTAMP)
+    seen_count = Column(Integer, nullable=False, default=0)
+
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
 
     # Relationship
     assessment = relationship("Assessment", back_populates="cards")
+
+    __table_args__ = (
+        Index("cards_assessment_fingerprint_idx", "assessment_id", "fingerprint", unique=True),
+    )

@@ -3,6 +3,7 @@ Folder CRUD API endpoints
 """
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -20,19 +21,20 @@ router = APIRouter(prefix="/folders", tags=["folders"])
 @router.get("", response_model=List[FolderWithCount])
 async def list_folders(db: Session = Depends(get_db)):
     """Get all folders with assessment counts"""
-    folders = db.query(Folder).all()
-    
-    # Add assessment counts
-    result = []
-    for folder in folders:
-        count = db.query(Assessment).filter(Assessment.folder_id == folder.id).count()
-        folder_dict = {
-            **folder.__dict__,
-            "assessment_count": count
-        }
-        result.append(FolderWithCount(**folder_dict))
-    
-    return result
+    rows = (
+        db.query(Folder, func.count(Assessment.id))
+        .outerjoin(Assessment, Assessment.folder_id == Folder.id)
+        .group_by(Folder.id)
+        .all()
+    )
+
+    return [
+        FolderWithCount(
+            **FolderResponse.model_validate(folder).model_dump(),
+            assessment_count=count,
+        )
+        for folder, count in rows
+    ]
 
 
 @router.get("/{folder_id}", response_model=FolderResponse)

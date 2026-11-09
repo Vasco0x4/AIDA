@@ -7,11 +7,12 @@ MCP Tools Definitions - Refactored according to specifications
 """
 from typing import List
 from mcp.types import Tool
+from mcp_host_execution import get_host_execution_policy
 
 
 def get_tool_definitions() -> List[Tool]:
     """Get all MCP tool definitions"""
-    return [
+    tools = [
         # ========== Assessment Management (5 tools) ==========
         Tool(
             name="load_assessment",
@@ -696,3 +697,43 @@ def get_tool_definitions() -> List[Tool]:
             }
         ),
     ]
+
+    if get_host_execution_policy() is not None:
+        tools.append(Tool(
+            name="host_execute",
+            description=(
+                "Execute an allowlisted action directly on the host with argv-style "
+                "arguments, an allowlisted working directory, and explicit targets. "
+                "This never invokes a shell and is separate from container execute()."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Allowlisted executable/action name (not a command string)",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": 4096},
+                        "maxItems": 64,
+                        "description": "Individual argv arguments; shell metacharacters are rejected",
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Explicit directory within the configured host allowlist",
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 64,
+                        "description": "Explicit authorized targets; use [] for non-network actions",
+                    },
+                },
+                "required": ["action", "args", "working_directory", "targets"],
+                "additionalProperties": False,
+            },
+        ))
+    return tools

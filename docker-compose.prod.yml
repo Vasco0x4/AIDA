@@ -1,34 +1,219 @@
-# Production override — used by ./start.sh (default) and ./start.sh --lan
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# =============================================================================
+# AIDA — PRODUCTION STACK (single host, self-contained)
 #
-# Ports:
-#   Frontend : ${FRONTEND_BIND:-127.0.0.1}:31337  (Nginx — localhost default, 0.0.0.0 with --lan)
-#   Backend  : 127.0.0.1:8000 (same as dev, localhost-only — MCP clients on host still work)
-#   Postgres : 127.0.0.1:5432 (unchanged)
+# Standalone production deployment — NOT an overlay on the dev compose. Brings
+# up the complete platform: Postgres, backend (no dev deps, prod mode),
+# Nginx frontend, filtered Docker access for the pentest executor, and the
+# pentest container.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Optional profiles:
+#   --profile tls         Caddy TLS reverse proxy in front of Nginx (needs
+#                         .aida/Caddyfile — see deploy/Caddyfile.example)
+#   --profile monitoring  Prometheus scraping the backend /metrics endpoint
+#                         (see deploy/prometheus.yml)
+#
+# Configuration: copy backend/.env.example → backend/.env and edit
+# (POSTGRES_PASSWORD at minimum). SECRET_KEY is auto-generated and persisted
+# on first start if not provided. See DEPLOYMENT.md for the full runbook.
+#
+# Ports (host side configurable):
+#   Frontend : ${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-31337} → nginx:8080
+#   Backend  : ${BACKEND_BIND:-127.0.0.1}:8000  (API/MCP for host clients)
+#   Postgres : NOT published — reach it via `docker compose exec postgres psql`;
+#              backups run through the same exec path (scripts/backup.sh).
+#   Caddy    : 80/443 (tls profile)
+# =============================================================================
+name: ${AIDA_PROJECT_NAME:-aida-prod}
 
 services:
-  backend:
-    # ports: intentionally omitted — the base docker-compose.yml already
-    # declares the 127.0.0.1:8000:8000 mapping. Repeating it here would
-    # produce duplicate port entries in the merged compose and cause Docker
-    # to reject the binding.
+  postgres:
+    image: postgres:16-alpine
     environment:
-      # Injected by start.sh --lan — includes LAN IP + localhost variants on port 31337
-      BACKEND_CORS_ORIGINS: "${BACKEND_CORS_ORIGINS:-http://localhost:31337,http://127.0.0.1:31337}"
+      POSTGRES_USER: ${POSTGRES_USER:-aida}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-aida_assessments}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - aida-prod-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aida} -d ${POSTGRES_DB:-aida_assessments}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  backend:
+    image: ${BACKEND_IMAGE:-aida-prod-backend:local}
+    # Fallback for air-gapped hosts / unpublished images: build locally.
+    # docker compose build backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      # INSTALL_DEV defaults to false — pytest/ruff stay out of prod images.
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-aida}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-aida_assessments}
       ENVIRONMENT: production
+      # The frontend origin as reached from the browser. With the tls profile
+      # set this to https://<your-domain>.
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:${FRONTEND_PORT:-31337},http://127.0.0.1:${FRONTEND_PORT:-31337}}
+      # Filtered Docker API (containers + exec only) — see docker-proxy below.
+      DOCKER_HOST: tcp://docker-proxy:2375
+      DEFAULT_CONTAINER_NAME: ${DEFAULT_CONTAINER_NAME:-aida-prod-pentest}
+      SECRET_KEY: ${SECRET_KEY:-}
+    ports:
+      - "${BACKEND_BIND:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - backend_logs:/app/logs
+      # Evidence mirror (PoC videos / screenshots / submission PDFs) — put this
+      # on persistent storage; it duplicates what the DB already stores.
+      - ${EVIDENCE_DIR:-aida_evidence}:/evidence
+    networks:
+      - aida-prod-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2g
 
   frontend:
+    image: ${FRONTEND_IMAGE:-aida-frontend-prod:latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile.prod
+      args:
+        VITE_MCP_PORT: ${BACKEND_PORT:-8000}
+        VITE_MCP_URL: ${VITE_MCP_URL:-}
+    # 127.0.0.1 by default: in no-TLS mode this is THE entry point; with the
+    # tls profile Caddy fronts the public side and this stays loopback-only.
     ports:
-      - "${FRONTEND_BIND:-127.0.0.1}:31337:80"
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-31337}:8080"
+    networks:
+      - aida-prod-network
     depends_on:
       backend:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # Docker Socket Proxy — the ONLY bridge to the host Docker daemon. The
+  # backend gets create/inspect/exec on containers and nothing else: no image
+  # builds, no volume/host mounts, no root-equivalent API surface. (In k8s the
+  # same executor talks to a DinD sidecar instead — see k8s/.)
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      POST: 1
+      CONTAINERS: 1
+      EXEC: 1
+      IMAGES: 0
+      VOLUMES: 0
+      NETWORKS: 0
+      SERVICES: 0
+      TASKS: 0
+      NODES: 0
+      SWARM: 0
+      BUILD: 0
+      AUTH: 0
+      SECRETS: 0
+      PLUGINS: 0
+      INFO: 0
+      VERSION: 0
+      EVENTS: 0
+      DISTRIBUTION: 0
+      SYSTEM: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - aida-prod-network
+    restart: unless-stopped
+
+  # Pentest execution container — the agent's commands run here via docker exec.
+  # Explicit name: it must equal the backend's DEFAULT_CONTAINER_NAME so the
+  # executor targets it exactly. Override BOTH together (they are a pair) when
+  # another AIDA stack shares the daemon.
+  aida-pentest:
+    image: ${PENTEST_IMAGE:-vasco0x4/aida-pentest:latest}
+    build:
+      context: ./pentest
+      dockerfile: Dockerfile
+    container_name: ${PENTEST_CONTAINER_NAME:-aida-prod-pentest}
+    tty: true
+    stdin_open: true
+    volumes:
+      - pentest_workspaces:/workspace
+    networks:
+      - aida-prod-network
+    restart: unless-stopped
+
+  # ---- profile: tls -----------------------------------------------------------
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    ports:
+      - "${CADDY_BIND:-0.0.0.0}:80:80"
+      - "${CADDY_BIND:-0.0.0.0}:443:443"
+    volumes:
+      - ./.aida/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - aida-prod-network
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+  # ---- profile: monitoring ----------------------------------------------------
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_BIND:-127.0.0.1}:9090:9090"
+    networks:
+      - aida-prod-network
+    restart: unless-stopped
+
+networks:
+  aida-prod-network:
+    name: ${AIDA_PROJECT_NAME:-aida-prod}-network
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_postgres_data
+  backend_logs:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_backend_logs
+  aida_evidence:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_evidence
+  pentest_workspaces:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_pentest_workspaces
+  caddy_data:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_caddy_data
+  caddy_config:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_caddy_config
+  prometheus_data:
+    name: ${AIDA_VOLUME_PREFIX:-aida_prod}_prometheus_data

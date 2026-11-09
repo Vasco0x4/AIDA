@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Settings as SettingsIcon,
   Server,
@@ -24,6 +25,16 @@ import workspaceService from '../services/workspaceService';
 import notificationService from '../services/notificationService';
 import { useTheme } from '../contexts/ThemeContext';
 import McpAccessSection from '../components/common/McpAccessSection';
+import AIModelsSection from '../components/common/AIModelsSection';
+import TelegramBotToggle from '../components/common/TelegramBotToggle';
+import KnowledgeSection from '../components/common/KnowledgeSection';
+import { Cpu, BookOpen as BookOpenIcon, ScrollText, KeyRound, Bot, CalendarClock, FileText, ShieldCheck } from 'lucide-react';
+import AuditSection from '../components/settings/AuditSection';
+import SSOSection from '../components/settings/SSOSection';
+import OTPSection from '../components/settings/OTPSection';
+import AgentOpsSection from '../components/settings/AgentOpsSection';
+import SchedulesSection from '../components/settings/SchedulesSection';
+import ReportBrandingSection from '../components/settings/ReportBrandingSection';
 import { useSetting } from '../hooks/useSetting';
 
 // Backend root for the API docs links, derived from the configured API base so
@@ -35,7 +46,10 @@ const DOCS_BASE_URL = /^https?:\/\//.test(_apiBase)
 
 const Settings = () => {
   const { theme, toggleTheme, isDark, primaryColor, setPrimaryColor, colorThemes } = useTheme();
-  const [activeTab, setActiveTab] = useState('general');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const activeTab = ['general', 'tools', 'notifications', 'ai_models', 'knowledge', 'mcp', 'security', 'agents', 'scheduler', 'reports', 'sso', 'audit', 'about'].includes(requestedTab) ? requestedTab : 'general';
+  const setActiveTab = (tab) => setSearchParams({ tab });
   const [systemStatus, setSystemStatus] = useState({
     backend: { status: 'checking', latency: 0, version: '' },
     database: { status: 'checking', connected: false, version: '' },
@@ -506,9 +520,17 @@ const Settings = () => {
 
   const tabs = [
     { id: 'general', label: 'General', icon: SettingsIcon },
+    { id: 'security', label: 'Security', icon: ShieldCheck },
     { id: 'tools', label: 'Tools', icon: Terminal },
     { id: 'notifications', label: 'Notifications', icon: Bell },
+    { id: 'ai_models', label: 'AI Models', icon: Cpu },
+    { id: 'knowledge', label: 'Knowledge', icon: BookOpenIcon },
     { id: 'mcp', label: 'MCP Access', icon: Key },
+    { id: 'agents', label: 'Agents', icon: Bot },
+    { id: 'scheduler', label: 'Scheduler', icon: CalendarClock },
+    { id: 'reports', label: 'Reports', icon: FileText },
+    { id: 'sso', label: 'SSO', icon: KeyRound },
+    { id: 'audit', label: 'Audit Log', icon: ScrollText },
     { id: 'about', label: 'About', icon: Info }
   ];
 
@@ -1289,6 +1311,7 @@ const Settings = () => {
                 <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={tgOnHigh} onChange={e => setTgOnHigh(e.target.checked)} className="rounded" /> High</label>
                 <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={tgOnScan} onChange={e => setTgOnScan(e.target.checked)} className="rounded" /> Scan Complete</label>
               </div>
+              <TelegramBotToggle />
               <div className="flex gap-2">
                 <button onClick={() => saveNotifChannel('telegram')} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-colors flex items-center gap-1"><Save className="w-3 h-3" /> Save</button>
                 <button onClick={() => testNotifChannel('telegram')} disabled={notifTesting === 'telegram'} className="px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 transition-colors disabled:opacity-50">
@@ -1392,7 +1415,28 @@ const Settings = () => {
         )}
 
         {/* TAB: MCP ACCESS */}
+        {activeTab === 'ai_models' && <AIModelsSection />}
+
+        {activeTab === 'knowledge' && <KnowledgeSection />}
+
         {activeTab === 'mcp' && <McpAccessSection />}
+
+        {activeTab === 'security' && <OTPSection />}
+
+        {/* TAB: AGENTS (E3 — agent pool reliability + kill switch) */}
+        {activeTab === 'agents' && <AgentOpsSection />}
+
+        {/* TAB: SCHEDULER (E4 — cron engagements) */}
+        {activeTab === 'scheduler' && <SchedulesSection />}
+
+        {/* TAB: REPORTS (E4 — branding + compliance templates) */}
+        {activeTab === 'reports' && <ReportBrandingSection />}
+
+        {/* TAB: SSO (E2 — OIDC single sign-on) */}
+        {activeTab === 'sso' && <SSOSection />}
+
+        {/* TAB: AUDIT TRAIL (E2 — security audit log) */}
+        {activeTab === 'audit' && <AuditSection />}
 
         {/* TAB 4: ABOUT */}
         {activeTab === 'about' && (

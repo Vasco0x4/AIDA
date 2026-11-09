@@ -122,18 +122,24 @@ export function useWebSocket(assessmentId = null) {
     }
 
     if (ws.current) {
-      // Prevent "WebSocket is closed before the connection is established"
-      // error by removing handlers if closing while connecting
-      if (ws.current.readyState === WebSocket.CONNECTING) {
-        ws.current.onopen = null;
-        ws.current.onclose = null;
-        ws.current.onerror = null;
-        ws.current.onmessage = null;
+      const socket = ws.current;
+      // Closing a CONNECTING browser socket produces a page-level
+      // "WebSocket closed without opened" error in React StrictMode. Detach
+      // handlers and close it normally as soon as the handshake completes.
+      if (socket.readyState === WebSocket.CONNECTING) {
+        socket.onopen = () => {
+          try { socket.close(1000, 'Client disconnect'); } catch { /* already closed */ }
+        };
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        ws.current = null;
+        setIsConnected(false);
+        return;
       }
 
-      // Close silently - don't log in development (React StrictMode causes multiple connects/disconnects)
       try {
-        ws.current.close(1000, 'Client disconnect');
+        socket.close(1000, 'Client disconnect');
       } catch {
         // Ignore errors when closing
       }

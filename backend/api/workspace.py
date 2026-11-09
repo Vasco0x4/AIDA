@@ -178,7 +178,7 @@ async def open_assessment_workspace(
                 assessment_id=assessment_id,
                 host_path=host_path
             )
-            
+
             workspace_exists = await workspace_service.validate_workspace_in_container(
                 container_path=assessment.workspace_path,
                 container_name=container_name
@@ -351,14 +351,14 @@ async def resolve_workspace_path(
 ):
     """
     Resolve assessment workspace container path to host filesystem path
-    
+
     Used by AIDA CLI launcher to determine where to launch Claude Code from.
-    
+
     Query params:
         assessment_id: Assessment ID (optional)
         assessment_name: Assessment name (optional, case-insensitive)
         container: Container name override (optional, uses assessment's container if not provided)
-    
+
     Returns:
         Dict with:
         - assessment_id: ID of the assessment
@@ -375,7 +375,7 @@ async def resolve_workspace_path(
         assessment_name=assessment_name,
         container=container
     )
-    
+
     try:
         # Get assessment
         if assessment_name:
@@ -391,62 +391,52 @@ async def resolve_workspace_path(
                 status_code=400,
                 detail="Provide either assessment_id or assessment_name"
             )
-        
+
         if not assessment:
             raise HTTPException(
                 status_code=404,
                 detail=f"Assessment not found: {assessment_name or assessment_id}"
             )
-        
+
         # Get container name (priority: param > assessment.container_name > default)
         container_name = container or assessment.container_name or settings.DEFAULT_CONTAINER_NAME
-        
+
         # Use workspace_path from assessment if available, otherwise construct it
         if assessment.workspace_path:
             container_path = assessment.workspace_path
         else:
             # Construct default path
             container_path = f"{settings.CONTAINER_WORKSPACE_BASE}/{assessment.name}"
-        
+
         logger.debug(
             "Using container and path",
             container_name=container_name,
             container_path=container_path
         )
-        
-        # Check if the execution target is up. In localhost mode there's no
-        # Docker container — the equivalent liveness signal is the host-agent
-        # daemon holding its Unix socket, so we short-circuit to True when the
-        # backend can reach the agent (which is required for the stack to run
-        # in the first place, so this is effectively always True here).
-        if (
-            settings.DEPLOYMENT_MODE == "localhost"
-            and container_name == settings.LOCALHOST_CONTAINER_LABEL
-        ):
-            import os as _os
-            container_running = _os.path.exists(settings.HOST_AGENT_SOCKET)
-        else:
-            container_status_result = await workspace_service._run_command([
-                "docker", "inspect", container_name, "--format", "{{.State.Status}}"
-            ])
-            container_running = (
-                container_status_result["returncode"] == 0 and
-                container_status_result["stdout"].strip() == "running"
-            )
-        
+
+        # Check if container is running
+        container_status_result = await workspace_service._run_command([
+            "docker", "inspect", container_name, "--format", "{{.State.Status}}"
+        ])
+
+        container_running = (
+            container_status_result["returncode"] == 0 and
+            container_status_result["stdout"].strip() == "running"
+        )
+
         # Resolve to host path
         host_path = await workspace_service.get_host_workspace_path(
             container_path=container_path,
             container_name=container_name
         )
-        
+
         if not host_path:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to resolve host path for container '{container_name}'. "
                        f"Is the container configured correctly?"
             )
-        
+
         # Check if workspace exists (only if container is running)
         exists = False
         if container_running:
@@ -458,7 +448,7 @@ async def resolve_workspace_path(
             # If container is not running, check if host path exists
             import os
             exists = os.path.exists(host_path) and os.path.isdir(host_path)
-        
+
         logger.info(
             "Resolved workspace path",
             assessment_id=assessment.id,
@@ -466,7 +456,7 @@ async def resolve_workspace_path(
             exists=exists,
             container_running=container_running
         )
-        
+
         return {
             "success": True,
             "assessment_id": assessment.id,
@@ -477,7 +467,7 @@ async def resolve_workspace_path(
             "exists": exists,
             "container_running": container_running
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:

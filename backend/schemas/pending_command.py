@@ -21,6 +21,8 @@ class PendingCommandResponse(BaseModel):
     phase: Optional[str]
     matched_keywords: List[str]
     status: str  # pending, approved, rejected, executed
+    risk_level: str = "normal"  # E4: 'normal' | 'high' (exploit-class)
+    risk_reason: Optional[str] = None
     resolved_by: Optional[str]
     rejection_reason: Optional[str]
     resolved_at: Optional[datetime]
@@ -49,6 +51,10 @@ class CommandSettingsResponse(BaseModel):
     filter_keywords: List[str]
     timeout_seconds: int = 300  # Default 5 minutes
     http_method_rules: Dict[str, str] = {}  # method -> "auto_approve" | "require_approval" | "inherit"
+    # E4 PoC approval chain
+    exploit_approval: str = "on"            # 'on' | 'off'
+    exploit_admin_approval: bool = True     # high-risk needs an admin's sign-off
+    exploit_approval_timeout: int = 600     # seconds the agent waits for a human
 
 
 class CommandSettingsUpdate(BaseModel):
@@ -57,6 +63,9 @@ class CommandSettingsUpdate(BaseModel):
     filter_keywords: Optional[List[str]] = None
     timeout_seconds: Optional[int] = None
     http_method_rules: Optional[Dict[str, str]] = None
+    exploit_approval: Optional[str] = None
+    exploit_admin_approval: Optional[bool] = None
+    exploit_approval_timeout: Optional[int] = None
 
 
 class KeywordAdd(BaseModel):

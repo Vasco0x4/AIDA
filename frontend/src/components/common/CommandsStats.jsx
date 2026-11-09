@@ -1,3 +1,5 @@
+import { utcDate } from '../../utils/utcDate';
+import React from 'react';
 import { Terminal, Clock, CheckCircle, XCircle, TrendingUp, TrendingDown } from '../icons';
 
 const CommandsStats = ({ commands = [], className = "" }) => {
@@ -24,13 +26,13 @@ const CommandsStats = ({ commands = [], className = "" }) => {
     }, {});
 
     // Calculate trends (last 7 days vs previous 7 days)
-    const now = new Date();
-    const last7days = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const last14days = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const now = utcDate();
+    const last7days = utcDate(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const last14days = utcDate(now.getTime() - 14 * 24 * 60 * 60 * 1000);
 
-    const recentCommands = commands.filter(c => new Date(c.created_at) > last7days).length;
+    const recentCommands = commands.filter(c => utcDate(c.created_at) > last7days).length;
     const previousCommands = commands.filter(c => {
-      const date = new Date(c.created_at);
+      const date = utcDate(c.created_at);
       return date > last14days && date <= last7days;
     }).length;
 

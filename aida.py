@@ -83,6 +83,20 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 
+from backend.launcher_adapters import (
+    _codex_override,
+    _toml_value,
+    build_codex_command,
+    build_codex_mcp_args,
+    build_cursor_command,
+    build_gemini_command,
+    build_qwen_command,
+    build_qwen_mcp_servers,
+    CLI_CAPABILITIES,
+    CLI_PRIORITY,
+    detect_available_clis,
+)
+
 console = Console()
 
 # Configuration
@@ -104,7 +118,9 @@ KIMI_WORKSPACE_CONFIG_DIR = ".kimi-code"
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
 DEFAULT_PERMISSION = "default"
-DEFAULT_BACKEND = "http://localhost:8000/api"
+# Dev stack (docker-compose.yml in this checkout): backend on :8001,
+# postgres on :5433. The old single-port stack on :8000/:5432 is gone.
+DEFAULT_BACKEND = "http://localhost:8001/api"
 
 CONTAINER_PREFS_FILE = AIDA_CONFIG_DIR / "container-preference"
 
@@ -117,15 +133,33 @@ def ensure_backend_venv(quiet=False) -> Path:
     backend_dir = AIDA_ROOT / "backend"
     venv_dir = backend_dir / "venv"
     requirements_file = backend_dir / "requirements.txt"
-    
+    python_bin = venv_dir / "bin" / "python"
+
+    # A venv dir without a working bin/python (interrupted creation, or a
+    # system python old enough that pip failed) is a broken stub — recreate.
+    if venv_dir.exists() and not python_bin.exists():
+        if not quiet:
+            console.print("[yellow]⚠ Broken backend venv stub (no bin/python), recreating...[/yellow]")
+        import shutil
+        shutil.rmtree(venv_dir, ignore_errors=True)
+
     # Check if venv exists
     if not venv_dir.exists():
         if not quiet:
             console.print("[yellow]⚠ Backend venv not found, creating...[/yellow]")
-        
+
+        # requirements.txt needs Python >= 3.10; prefer a Homebrew python when
+        # the interpreter running this script is older (macOS ships 3.9).
+        venv_python = sys.executable
+        if sys.version_info < (3, 10):
+            for candidate in ("/opt/homebrew/bin/python3.14", "/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3.12", "/opt/homebrew/bin/python3.11"):
+                if Path(candidate).exists():
+                    venv_python = candidate
+                    break
+
         try:
             subprocess.run(
-                [sys.executable, "-m", "venv", str(venv_dir)],
+                [venv_python, "-m", "venv", str(venv_dir)],
                 check=True,
                 capture_output=True
             )
@@ -157,7 +191,7 @@ def ensure_backend_venv(quiet=False) -> Path:
                         check=True,
                         capture_output=True,
                         text=True,
-                        timeout=120
+                        timeout=900
                     )
                     if not quiet:
                         console.print("[green]✓ Backend dependencies installed[/green]")
@@ -204,10 +238,10 @@ def check_exegol_installed() -> bool:
         return False
 
 
-def generate_mcp_config(db_url: str, token: str = "", quiet=False) -> None:
+def generate_mcp_config(db_url: str, token: str = "", backend_url: str = "", quiet=False) -> None:
     """Generate MCP configuration file with proper backend venv"""
     AIDA_CONFIG_DIR.mkdir(exist_ok=True)
-    
+
     # Ensure backend venv exists with MCP dependencies
     try:
         python_bin = ensure_backend_venv(quiet)
@@ -217,17 +251,23 @@ def generate_mcp_config(db_url: str, token: str = "", quiet=False) -> None:
             console.print(f"[red]✗ Could not setup backend venv: {e}[/red]")
             console.print("[yellow]Falling back to system Python[/yellow]")
         python_bin_str = "python3"
-    
+
+    # The MCP handlers call the backend REST API; without BACKEND_API_URL they
+    # fall back to the default :8000, which is not this stack's backend.
+    mcp_env = {
+        "PYTHONPATH": str((AIDA_ROOT / "backend").absolute()),
+        "DATABASE_URL": db_url,
+        "AIDA_TOKEN": token,
+    }
+    if backend_url:
+        mcp_env["BACKEND_API_URL"] = backend_url
+
     config = {
         "mcpServers": {
             "aida-mcp": {
                 "command": python_bin_str,
                 "args": [str(MCP_SERVER_PATH.absolute())],
-                "env": {
-                    "PYTHONPATH": str((AIDA_ROOT / "backend").absolute()),
-                    "DATABASE_URL": db_url,
-                    "AIDA_TOKEN": token,
-                }
+                "env": mcp_env
             }
         }
     }
@@ -304,86 +344,77 @@ The assessment workspace is ready. Use your standard tools to work with files an
     return agents_file
 
 
-def detect_cli() -> CLIType:
-    """Detect which supported AI CLI is available."""
-    # Check for Claude
-    result = subprocess.run(["which", "claude"], capture_output=True)
-    if result.returncode == 0:
-        return "claude"
-
-    # Check for OpenAI Codex
-    result = subprocess.run(["which", "codex"], capture_output=True)
-    if result.returncode == 0:
-        return "codex"
-
-    # Check for Kimi
-    result = subprocess.run(["which", "kimi"], capture_output=True)
-    if result.returncode == 0:
-        return "kimi"
-
-    # Check for Qwen
-    result = subprocess.run(["which", "qwen"], capture_output=True)
-    if result.returncode == 0:
-        return "qwen"
-
-    return None
-
-
-def _toml_value(value) -> str:
-    """Serialize the simple values used by Codex -c overrides as TOML."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        # JSON strings use the same escaping needed by TOML basic strings.
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    raise TypeError(f"Unsupported TOML value type: {type(value).__name__}")
-
-
-def _codex_override(key: str, value) -> list[str]:
-    """Build one Codex CLI configuration override."""
-    return ["--config", f"{key}={_toml_value(value)}"]
-
-
-def build_codex_mcp_args(
+def generate_scoped_client_config(
+    cli_type: str,
     *,
-    python_bin: Optional[str] = None,
-    http_url: Optional[str] = None,
-) -> list[str]:
-    """Build ephemeral Codex MCP configuration without changing user config.
+    workspace_path: str,
+    preprompt_content: str,
+    no_mcp: bool,
+    http_url: Optional[str],
+    mcp_api_key: str,
+    token: str,
+    backend_url: str,
+    db_url: str,
+    quiet: bool,
+) -> None:
+    """Write native Gemini/Cursor project config, preserving other servers."""
+    workspace = Path(workspace_path)
+    config_dir = workspace / (".gemini" if cli_type == "gemini" else ".cursor")
+    config_dir.mkdir(parents=True, exist_ok=True)
 
-    Secrets are forwarded by environment-variable name and never embedded in
-    argv or written to Codex's persistent config.
-    """
-    prefix = "mcp_servers.aida-mcp"
-    args = []
-
-    if http_url:
-        args.extend(_codex_override(f"{prefix}.url", http_url))
-        args.extend(_codex_override(
-            f"{prefix}.bearer_token_env_var",
-            "AIDA_MCP_API_KEY",
-        ))
+    if cli_type == "gemini":
+        instruction_file = config_dir / "AIDA.md"
+        instruction_file.write_text(preprompt_content)
+        settings_file = config_dir / "settings.json"
+        settings = json.loads(settings_file.read_text()) if settings_file.exists() else {}
+        context = settings.setdefault("context", {})
+        filenames = context.get("fileName", "GEMINI.md")
+        filenames = filenames if isinstance(filenames, list) else [filenames]
+        if ".gemini/AIDA.md" not in filenames:
+            filenames.append(".gemini/AIDA.md")
+        context["fileName"] = filenames
     else:
-        args.extend(_codex_override(f"{prefix}.command", python_bin or "python3"))
-        args.extend(_codex_override(
-            f"{prefix}.args",
-            [str(MCP_SERVER_PATH.absolute())],
-        ))
-        args.extend(_codex_override(
-            f"{prefix}.env_vars",
-            ["AIDA_TOKEN", "BACKEND_API_URL", "DATABASE_URL", "PYTHONPATH"],
-        ))
+        instruction_file = config_dir / "rules" / "aida.mdc"
+        instruction_file.parent.mkdir(parents=True, exist_ok=True)
+        instruction_file.write_text(
+            "---\ndescription: AIDA assessment instructions\nalwaysApply: true\n---\n\n"
+            + preprompt_content
+        )
+        settings_file = config_dir / "mcp.json"
+        settings = json.loads(settings_file.read_text()) if settings_file.exists() else {}
 
-    args.extend(_codex_override(f"{prefix}.required", True))
-    args.extend(_codex_override(f"{prefix}.startup_timeout_sec", 30))
-    # Scans and AIDA's human command-approval flow can legitimately take
-    # longer than Codex's default 60-second MCP timeout.
-    args.extend(_codex_override(f"{prefix}.tool_timeout_sec", 900))
-    return args
+    if not no_mcp:
+        python_bin = "python3"
+        if not http_url:
+            try:
+                python_bin = str(ensure_backend_venv(quiet).absolute())
+            except Exception:
+                # The stdio server can still use an already provisioned Python.
+                pass
+        servers = build_qwen_mcp_servers(
+            token=token,
+            backend_url=backend_url,
+            db_url=db_url,
+            http_url=http_url,
+            mcp_api_key=mcp_api_key,
+            python_bin=python_bin,
+        )
+        settings.setdefault("mcpServers", {}).update(servers)
+
+    # Gemini needs settings for context even with --no-mcp. Cursor has no
+    # reason to create an empty MCP file in that mode.
+    if cli_type == "gemini" or not no_mcp:
+        settings_file.write_text(json.dumps(settings, indent=2) + "\n")
+        # HTTP bearer/session values can be present in this project file.
+        settings_file.chmod(0o600)
+        if not quiet:
+            console.print(f"[dim]✓ {cli_type.title()} scoped config: {settings_file}[/dim]")
+
+
+def detect_cli() -> CLIType:
+    """Select the first installed CLI from the shared capability registry."""
+    detected = detect_available_clis()
+    return next((name for name in CLI_PRIORITY if detected[name]["installed"]), None)
 
 
 def _read_file_token(path: Path) -> Optional[str]:
@@ -429,6 +460,13 @@ def _do_login(backend_url: str) -> str:
                 f"{backend_url}/auth/login",
                 json={"username": username, "password": password},
             )
+            if response.status_code == 200 and response.json().get("otp_required"):
+                challenge_id = response.json()["challenge_id"]
+                code = getpass.getpass("  Authenticator or recovery code: ")
+                response = client.post(
+                    f"{backend_url}/auth/otp/verify",
+                    json={"challenge_id": challenge_id, "code": code},
+                )
         if response.status_code == 200:
             return response.json()["access_token"]
         elif response.status_code == 401:
@@ -598,7 +636,7 @@ def resolve_workspace(assessment_name: str, backend_url: str, token: str = "") -
             console.print("[yellow]Troubleshooting:[/yellow]")
             console.print("  1. Check: [cyan]docker-compose ps[/cyan]")
             console.print("  2. Start: [cyan]docker-compose up -d[/cyan]")
-            console.print("  3. Test:  [cyan]curl http://localhost:8000/health[/cyan]\n")
+            console.print("  3. Test:  [cyan]curl http://localhost:8001/health[/cyan]\n")
             sys.exit(1)
 
         except (httpx.ReadError, httpx.WriteError, httpx.PoolTimeout, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
@@ -621,7 +659,7 @@ def show_assessment_not_found(assessment_name: str, backend_url: str):
     """Display detailed error when assessment workspace cannot be resolved"""
     console.print(f"\n[red]✗ Cannot load assessment '{assessment_name}'[/red]\n")
 
-    container_pref = CONTAINER_PREFS_FILE.read_text().strip() if CONTAINER_PREFS_FILE.exists() else "aida-pentest"
+    container_pref = CONTAINER_PREFS_FILE.read_text().strip() if CONTAINER_PREFS_FILE.exists() else "aida-dev-pentest"
 
     if container_pref == "exegol" and not check_exegol_installed():
         console.print("[yellow]⚠ No Exegol container detected on this system[/yellow]\n")
@@ -649,7 +687,32 @@ def show_cli_not_found():
     console.print("  [cyan]npm install -g @qwen-code/qwen-code@latest[/cyan]")
     console.print("  or")
     console.print("  [cyan]bash -c \"$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)\"[/cyan]\n")
+    console.print("[bold]Gemini CLI:[/bold]")
+    console.print("  [cyan]npm install -g @google/gemini-cli[/cyan]\n")
+    console.print("[bold]Cursor Agent CLI:[/bold]")
+    console.print("  [cyan]https://cursor.com/docs/cli/installation[/cyan]")
+    console.print("  The executable is [cyan]agent[/cyan], not the Cursor editor binary.\n")
     sys.exit(1)
+
+
+def show_cli_capabilities():
+    """Print installation and capability diagnostics without requiring login."""
+    detected = detect_available_clis()
+    table = Table(title="AIDA AI client capabilities", box=box.ROUNDED)
+    for column in ("CLI", "Executable", "Installed", "Scoped configuration", "Transports", "Verification"):
+        table.add_column(column)
+    for name in CLI_PRIORITY:
+        item = detected[name]
+        table.add_row(
+            name,
+            item["executable"],
+            "[green]yes[/green]" if item["installed"] else "[dim]no[/dim]",
+            item["config"],
+            ", ".join(item["transports"]),
+            item.get("verified", "launcher integration"),
+        )
+    console.print(table)
+    console.print("[dim]Installation detection does not check provider authentication or model access.[/dim]")
 
 
 @click.command()
@@ -666,20 +729,24 @@ def show_cli_not_found():
               help="Bearer API key for the HTTP MCP transport (env: AIDA_MCP_API_KEY)")
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.option("-q", "--quiet", is_flag=True, help="Quiet mode (minimal output)")
-@click.option("--cli", "cli_choice", type=click.Choice(["claude", "codex", "kimi", "qwen", "auto"]), default="claude",
+@click.option("--cli", "cli_choice", type=click.Choice([*CLI_PRIORITY, "auto"]), default="claude",
               show_default=True, help="Which CLI to use; use auto for fallback detection")
+@click.option("--clients", is_flag=True, help="Show the client capability/install matrix and exit")
 @click.option(
     "-y", "--yes",
     is_flag=True,
-    help="Auto-approve all actions (Codex/Kimi/Qwen: full-access/yolo, Claude: permission-mode=accept)",
+    help="Auto-approve all actions (Codex/Kimi/Qwen/Gemini/Cursor: full-access/yolo/force, Claude: permission-mode=accept)",
 )
 @click.argument("prompt", nargs=-1)
-def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mcp, http_url, mcp_api_key, debug, quiet, cli_choice, yes, prompt):
+def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mcp, http_url, mcp_api_key, debug, quiet, cli_choice, clients, yes, prompt):
     """AIDA CLI Launcher - AI-Driven Security Assessment
 
-    Supports Claude Code, OpenAI Codex CLI, Kimi Code CLI, and Qwen Code CLI as underlying AI agents.
+    Supports Claude, Codex, Kimi, Qwen, Gemini and native Cursor Agent CLIs.
     """
-    
+    if clients:
+        show_cli_capabilities()
+        return
+
     # Clear terminal for clean start
     os.system('clear' if os.name != 'nt' else 'cls')
     
@@ -692,9 +759,10 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
         cli_type = detected_cli
     else:
         # User specified a CLI, check if it's available
-        result = subprocess.run(["which", cli_choice], capture_output=True)
+        executable = CLI_CAPABILITIES[cli_choice]["executable"]
+        result = subprocess.run(["which", executable], capture_output=True)
         if result.returncode != 0:
-            console.print(f"[red]✗ {cli_choice.title()} CLI not found in PATH[/red]")
+            console.print(f"[red]✗ {cli_choice.title()} CLI not found in PATH (expected: {executable})[/red]")
             console.print(f"Install {cli_choice} or use --cli auto to use available CLI\n")
             sys.exit(1)
         cli_type = cli_choice
@@ -710,7 +778,7 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
     
     permission_mode = permission_mode or os.getenv("AIDA_PERMISSION_MODE", DEFAULT_PERMISSION)
     backend_url = os.getenv("BACKEND_API_URL", DEFAULT_BACKEND)
-    db_url = os.getenv("DATABASE_URL", "postgresql://aida:aida@localhost:5432/aida_assessments")
+    db_url = os.getenv("DATABASE_URL", "postgresql://aida:aida@localhost:5433/aida_assessments")
 
     # Authenticate once — all subsequent API calls use this token.
     # The token is also forwarded to the MCP server via AIDA_TOKEN env var.
@@ -841,9 +909,9 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
                     "Pass --mcp-api-key or set AIDA_MCP_API_KEY.[/red]\n"
                 )
                 sys.exit(1)
-            # Codex receives an ephemeral -c configuration later. Other
-            # clients consume the generated JSON config.
-            if cli_type != "codex":
+            # Codex receives ephemeral overrides; Gemini and Cursor build their
+            # native scoped config after workspace resolution.
+            if cli_type not in ("codex", "gemini", "cursor"):
                 generate_mcp_http_config(url, key, quiet)
         else:
             if not MCP_SERVER_PATH.exists():
@@ -857,8 +925,8 @@ def main(assessment, model, permission_mode, preprompt, base_url, api_key, no_mc
                         console.print(f"[yellow]⚠ Could not setup backend venv: {e}[/yellow]")
                         console.print("[yellow]Falling back to system Python[/yellow]")
                     codex_mcp_python = "python3"
-            else:
-                generate_mcp_config(db_url, token, quiet)
+            elif cli_type not in ("gemini", "cursor"):
+                generate_mcp_config(db_url, token, backend_url, quiet)
     
     # Workspace resolution
     workspace_path = str(AIDA_ROOT)
@@ -960,59 +1028,23 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
         cli_name = "Claude Code"
 
     elif cli_type == "codex":
-        # Codex has no --system-prompt flag. developer_instructions is the
-        # documented one-run configuration surface for additional behavioral
-        # instructions and preserves Codex's built-in base instructions.
-        cli_args = [
-            "codex",
-            "--cd", workspace_path,
-            "--sandbox", "workspace-write",
-            "--ask-for-approval", "on-request",
-        ]
-        cli_args.extend(_codex_override(
-            "developer_instructions",
-            preprompt_content,
-        ))
-
-        if explicit_model:
-            cli_args.extend(["--model", explicit_model])
-
         env = os.environ.copy()
-
-        if not no_mcp:
-            if http_url or os.getenv("AIDA_MCP_HTTP_URL"):
-                url = http_url or os.getenv("AIDA_MCP_HTTP_URL")
-                key = mcp_api_key or os.getenv("AIDA_MCP_API_KEY", "")
-                env["AIDA_MCP_API_KEY"] = key
-                cli_args.extend(build_codex_mcp_args(http_url=url))
-            else:
-                env.update({
-                    "AIDA_TOKEN": token,
-                    "BACKEND_API_URL": backend_url,
-                    "DATABASE_URL": db_url,
-                    "PYTHONPATH": str((AIDA_ROOT / "backend").absolute()),
-                })
-                cli_args.extend(build_codex_mcp_args(
-                    python_bin=codex_mcp_python or "python3",
-                ))
-
-        # The AIDA project contains launcher/backend context that is useful
-        # when the assessment workspace is a separate bind mount.
-        if workspace_path != str(AIDA_ROOT):
-            cli_args.extend(["--add-dir", str(AIDA_ROOT)])
-
-        if yes:
-            # Match the existing AIDA --yes contract. This is intentionally
-            # explicit because Codex otherwise keeps its workspace sandbox.
-            approval_index = cli_args.index("--ask-for-approval")
-            del cli_args[approval_index:approval_index + 2]
-            sandbox_index = cli_args.index("--sandbox")
-            del cli_args[sandbox_index:sandbox_index + 2]
-            cli_args.append("--dangerously-bypass-approvals-and-sandbox")
-
-        if prompt:
-            cli_args.append(" ".join(prompt))
-
+        cli_args, codex_env = build_codex_command(
+            workspace_path=workspace_path,
+            preprompt_content=preprompt_content,
+            explicit_model=explicit_model,
+            no_mcp=no_mcp,
+            http_url=http_url or os.getenv("AIDA_MCP_HTTP_URL"),
+            mcp_api_key=mcp_api_key or os.getenv("AIDA_MCP_API_KEY", ""),
+            db_url=db_url,
+            backend_url=backend_url,
+            token=token,
+            codex_mcp_python=codex_mcp_python or "python3",
+            project_root=str(AIDA_ROOT),
+            prompt=prompt,
+            yes=yes,
+        )
+        env.update(codex_env)
         cli_name = "OpenAI Codex CLI"
 
     elif cli_type == "kimi":
@@ -1056,6 +1088,34 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
 
         cli_name = "Kimi Code CLI"
 
+    elif cli_type in ("gemini", "cursor"):
+        generate_scoped_client_config(
+            cli_type,
+            workspace_path=workspace_path,
+            preprompt_content=preprompt_content,
+            no_mcp=no_mcp,
+            http_url=http_url or os.getenv("AIDA_MCP_HTTP_URL"),
+            mcp_api_key=mcp_api_key or os.getenv("AIDA_MCP_API_KEY", ""),
+            token=token,
+            backend_url=backend_url,
+            db_url=db_url,
+            quiet=quiet,
+        )
+        if cli_type == "gemini":
+            cli_args = build_gemini_command(
+                explicit_model=explicit_model, prompt=prompt, yes=yes,
+            )
+            cli_name = "Gemini CLI"
+        else:
+            cli_args = build_cursor_command(
+                workspace_path=workspace_path,
+                explicit_model=explicit_model,
+                prompt=prompt,
+                yes=yes,
+            )
+            cli_name = "Cursor Agent CLI"
+        env = os.environ.copy()
+
     else:  # cli_type == "qwen"
         # Build Qwen Code CLI command
         # Qwen uses TWO config files:
@@ -1093,24 +1153,22 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
             if base_url:
                 settings["modelProviders"]["openai"][0]["baseUrl"] = base_url
             
-            # Add MCP server configuration if not disabled
-            if not no_mcp and MCP_SERVER_PATH.exists():
+            # Scope all MCP credentials to this assessment workspace.
+            python_bin_str = "python3"
+            if not no_mcp and not (http_url or os.getenv("AIDA_MCP_HTTP_URL")):
                 try:
-                    python_bin = ensure_backend_venv(quiet=True)
-                    python_bin_str = str(python_bin.absolute())
+                    python_bin_str = str(ensure_backend_venv(quiet=True).absolute())
                 except Exception:
-                    python_bin_str = "python3"
-                
-                settings["mcpServers"] = {
-                    "aida-mcp": {
-                        "command": python_bin_str,
-                        "args": [str(MCP_SERVER_PATH.absolute())],
-                        "env": {
-                            "PYTHONPATH": str((AIDA_ROOT / "backend").absolute()),
-                            "DATABASE_URL": db_url
-                        }
-                    }
-                }
+                    pass
+            settings["mcpServers"] = build_qwen_mcp_servers(
+                token=token,
+                backend_url=backend_url,
+                db_url=db_url,
+                no_mcp=no_mcp,
+                http_url=http_url or os.getenv("AIDA_MCP_HTTP_URL"),
+                mcp_api_key=mcp_api_key or os.getenv("AIDA_MCP_API_KEY"),
+                python_bin=python_bin_str,
+            )
             
             return settings
         
@@ -1152,6 +1210,8 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
         # Write settings.json
         settings_file = config_dir / "settings.json"
         settings_file.write_text(json.dumps(qwen_settings, indent=2))
+        # The file may contain a provider key or HTTP MCP bearer.
+        settings_file.chmod(0o600)
 
         # Write QWEN.md at workspace ROOT (not in .qwen/)
         # Qwen Code reads QWEN.md from project root, like CLAUDE.md for Claude Code
@@ -1161,12 +1221,8 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
         if not quiet and debug:
             console.print(f"[dim]✓ System prompt: {qwen_md_file.name} (workspace root)[/dim]\n")
 
-        # Qwen CLI command
-        cli_args = ["qwen"]
-
-        # Add prompt if provided
-        if prompt:
-            cli_args.extend(["-p", " ".join(prompt)])
+        # Qwen CLI command (validated against Qwen Code 0.26).
+        cli_args = build_qwen_command(explicit_model=explicit_model, prompt=prompt, yes=yes)
 
         env = os.environ.copy()
         cli_name = "Qwen Code CLI"
@@ -1226,6 +1282,10 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
             # Kimi Code CLI has no --work-dir flag: it runs in the cwd
             os.chdir(workspace_path)
             os.execvpe("kimi", cli_args, env)
+        elif cli_type in ("gemini", "cursor"):
+            os.chdir(workspace_path)
+            executable = CLI_CAPABILITIES[cli_type]["executable"]
+            os.execvpe(executable, cli_args, env)
         else:  # qwen
             os.chdir(workspace_path)
             os.execvpe("qwen", cli_args, env)

@@ -1,3 +1,4 @@
+import { utcDate } from '../utils/utcDate';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Target, Server, Shield, ArrowLeft, AlertTriangle, Info, Eye, TrendingUp, Filter, FolderOpen, RefreshCw, Download, Send, Play, Copy, Check, Plus, ChevronDown } from '../components/icons';
@@ -12,6 +13,8 @@ import CredentialsManager from '../components/assessment/CredentialsManager';
 import ContextDocumentsPanel from '../components/assessment/ContextDocumentsPanel';
 import AttackTimeline from '../components/assessment/AttackTimeline';
 import SendReportModal from '../components/assessment/SendReportModal';
+import FindingsDiff from '../components/assessment/FindingsDiff';
+import AssessmentRunHistory from '../components/assessment/AssessmentRunHistory';
 
 import ChangeContainerModal from '../components/workspace/ChangeContainerModal';
 import MethodologyReport from '../components/assessment/MethodologyReport';
@@ -33,7 +36,7 @@ const sortByScore = (a, b) => {
   const aOrder = SEVERITY_ORDER[a.severity] || 0;
   const bOrder = SEVERITY_ORDER[b.severity] || 0;
   if (aOrder !== bOrder) return bOrder - aOrder;
-  return new Date(b.created_at) - new Date(a.created_at);
+  return utcDate(b.created_at) - utcDate(a.created_at);
 };
 
 const AssessmentDetail = () => {
@@ -199,16 +202,16 @@ const AssessmentDetail = () => {
     }
   };
 
-  const handleExportPdf = async ({ includeSecrets = false } = {}) => {
+  const handleExportPdf = async ({ includeSecrets = false, template = 'default' } = {}) => {
     setShowPdfMenu(false);
     setExportingPdf(true);
     try {
       const response = await apiClient.get(`/assessments/${id}/report/pdf`, {
-        params: { include_secrets: includeSecrets },
+        params: { include_secrets: includeSecrets, template },
         responseType: 'blob',
       });
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
-      const suffix = includeSecrets ? '_with_creds' : '';
+      const suffix = (includeSecrets ? '_with_creds' : '') + (template !== 'default' ? `_${template}` : '');
       const safeName = assessment.name.replace(/[^a-zA-Z0-9 _-]/g, '_');
       const link = document.createElement('a');
       link.href = url;
@@ -222,6 +225,25 @@ const AssessmentDetail = () => {
       alert('Failed to generate PDF report. Check console for details.');
     } finally {
       setExportingPdf(false);
+    }
+  };
+
+  const handleExportMarkdown = async () => {
+    setShowPdfMenu(false);
+    try {
+      const response = await apiClient.get(`/assessments/${id}/report/markdown`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/markdown' }));
+      const safeName = assessment.name.replace(/[^a-zA-Z0-9 _-]/g, '_');
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `AIDA_Report_${safeName}.md`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Markdown export failed:', err);
+      alert('Failed to generate Markdown report. Check console for details.');
     }
   };
 
@@ -279,13 +301,13 @@ const AssessmentDetail = () => {
     const infos = cards.filter(c => c.card_type === 'info');
 
     // Recent activity (last 7 days)
-    const sevenDaysAgo = new Date();
+    const sevenDaysAgo = utcDate();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const recentCards = cards.filter(card => new Date(card.created_at) > sevenDaysAgo);
+    const recentCards = cards.filter(card => utcDate(card.created_at) > sevenDaysAgo);
 
-    const last24h = new Date();
+    const last24h = utcDate();
     last24h.setDate(last24h.getDate() - 1);
-    const last24hCards = cards.filter(card => new Date(card.created_at) > last24h);
+    const last24hCards = cards.filter(card => utcDate(card.created_at) > last24h);
 
     return {
       totalCards: cards.length,
@@ -507,6 +529,38 @@ const AssessmentDetail = () => {
                   <div className="font-medium text-rose-700 dark:text-rose-300">Download PDF — include credentials</div>
                   <div className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 leading-snug">
                     Plaintext passwords and tokens embedded. Internal use only — file is suffixed <code className="font-mono">_with_creds</code>.
+                  </div>
+                </button>
+                <div className="my-1 border-t border-neutral-100 dark:border-neutral-700" />
+                <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+                  Compliance appendix (E4)
+                </div>
+                {[
+                  { key: 'owasp', label: 'OWASP Top 10 (2021)' },
+                  { key: 'pci', label: 'PCI DSS v4.0' },
+                  { key: 'nist', label: 'NIST CSF 2.0' },
+                ].map((t) => (
+                  <button
+                    key={t.key}
+                    role="menuitem"
+                    onClick={() => handleExportPdf({ includeSecrets: false, template: t.key })}
+                    className="w-full text-left px-3 py-2 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700/60"
+                  >
+                    <div className="font-medium text-neutral-800 dark:text-neutral-100">PDF + {t.label}</div>
+                    <div className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 leading-snug">
+                      Findings mapped to {t.label} controls as a report appendix. Secrets masked.
+                    </div>
+                  </button>
+                ))}
+                <div className="my-1 border-t border-neutral-100 dark:border-neutral-700" />
+                <button
+                  role="menuitem"
+                  onClick={handleExportMarkdown}
+                  className="w-full text-left px-3 py-2 rounded hover:bg-neutral-100 dark:hover:bg-neutral-700/60"
+                >
+                  <div className="font-medium text-neutral-800 dark:text-neutral-100">Download Markdown</div>
+                  <div className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400 leading-snug">
+                    Machine-readable report (findings, kill chain, recon) for handoff or diffing. Secrets masked.
                   </div>
                 </button>
               </div>
@@ -983,6 +1037,15 @@ const AssessmentDetail = () => {
           )}
         </div>
       </div>
+
+      {/* Canonical run history within this Assessment. */}
+      <AssessmentRunHistory assessmentId={parseInt(id)} />
+
+      {/* Legacy comparison for data created before same-Assessment Scan Runs. */}
+      <details className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-4">
+        <summary className="cursor-pointer text-sm font-medium">Legacy cross-assessment comparison</summary>
+        <div className="mt-4"><FindingsDiff assessment={assessment} /></div>
+      </details>
 
       {/* OWASP ASVS verification grid (ASVS-methodology assessments only) */}
       {assessment?.methodology === 'asvs' && (

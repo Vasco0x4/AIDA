@@ -1,0 +1,46 @@
+# Caddyfile for the AIDA prod stack tls profile.
+#
+# Copy to .aida/Caddyfile and edit, then:
+#   docker compose -f docker-compose.prod.yml --profile tls up -d
+#
+# Two variants below — keep exactly one site block.
+
+# ---------------------------------------------------------------------------
+# VARIANT A — public domain, real certificate (Let's Encrypt)
+# Replace aida.example.com with your domain (DNS must point here, ports
+# 80/443 reachable). Optionally set an ACME account email.
+# ---------------------------------------------------------------------------
+{
+	admin off
+	# email you@example.com
+}
+
+aida.example.com {
+	reverse_proxy frontend:8080 {
+		header_up Host              {upstream_hostport}
+		header_up X-Real-IP         {remote_host}
+		header_up X-Forwarded-For   {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# VARIANT B — LAN / internal, self-signed internal CA (browser warning once)
+# ---------------------------------------------------------------------------
+# {
+# 	admin off
+# 	auto_https off
+# }
+#
+# :443 {
+# 	tls {
+# 		on_demand
+# 		issuer internal
+# 	}
+# 	reverse_proxy frontend:8080 {
+# 		header_up Host              {upstream_hostport}
+# 		header_up X-Real-IP         {remote_host}
+# 		header_up X-Forwarded-For   {remote_host}
+# 		header_up X-Forwarded-Proto {scheme}
+# 	}
+# }

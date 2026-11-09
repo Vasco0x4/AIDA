@@ -17,6 +17,10 @@ class PendingCommand(Base):
     command_type = Column(String(20), default='shell')  # 'shell' | 'python'
     matched_keywords = Column(JSON, default=[])  # Keywords that triggered the filter
     status = Column(String(20), default="pending", index=True)  # pending, approved, rejected, executed, timeout
+    # E4 PoC approval chain: exploit-class commands are flagged at creation so
+    # they can require admin sign-off (and a longer human timeout).
+    risk_level = Column(String(20), default="normal")   # 'normal' | 'high'
+    risk_reason = Column(String(100))
     
     # Resolution tracking
     resolved_by = Column(String(100))

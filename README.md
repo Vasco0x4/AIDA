@@ -43,6 +43,12 @@ and documents every finding with the commands used.
 
 ---
 
+## Extended local edition
+
+This is a draft integration branch. Read the [release review and compatibility notes](Docs/RELEASE_REVIEW.md) before upgrading.
+
+This installation includes an autonomous Task Board, recurring Scan Runs, profiles, OTP/SSO and operational extensions. Start with the [English documentation](Docs/README.md), [Kanban and Scheduler guide](Docs/KANBAN_SCHEDULER.md), and [upstream comparison](Docs/UPSTREAM_COMPARISON.md). Use the [installation guide for this edition](Docs/QUICK_START.md). Existing installations keep their configuration and data.
+
 ## Real Results
 
 Claude + AIDA isn't just talk. It produces results that end up in CVE databases.
@@ -94,20 +100,22 @@ Your expertise stays where it matters. The grunt work runs on its own.
 
 ## Quick Start
 
-**Prerequisites:** Docker Desktop + any AI client (Claude, Gemini, GPT...)
+**Prerequisites:** running Docker Desktop (or Docker Engine with Compose v2).
+
+Clone the repository containing this edition, or extract its source archive:
 
 ```bash
-git clone https://github.com/Vasco0x4/AIDA.git
+git clone --branch feat/appsec-kanban-integrations https://github.com/kuffsit/AIDA.git
 cd AIDA
 ./start.sh
 ```
 
-Dashboard: `http://localhost:31337`
+Dashboard: http://localhost:31337. Create the first administrator in the browser.
+The launcher generates private configuration and builds this source automatically.
+Run `./start.sh --build` after source updates; existing data and configuration are preserved.
 
-> `./start.sh --dev` — hot reload for contributors
-> `./start.sh --lan` — share across your local network (HTTPS, self-signed)
-> `./start.sh --domain x.com` — public deploy with Let's Encrypt
-> `./start.sh --localhost` — run commands directly on the host (no pentest container) — see [Localhost Mode](Docs/INSTALLATION.md#localhost-mode)
+See [Quick Start](Docs/QUICK_START.md) for prerequisites, updates and supported options.
+The upstream GitHub URL supplies this edition only after these changes are published there.
 
 ### Launch the Agent
 
@@ -192,6 +200,23 @@ Built-in `aida-pentest` container (~2 GB, starts automatically). Plug in [Exegol
 
 ---
 
+## Reliability, NVD digest, and host execution
+
+- **Recoverable Kanban:** atomic versioned claims, lease fencing, stale-work recovery, bounded retries, dependency-cycle checks, task history, and optimistic board updates.
+- **Critical CVE digest:** scheduled/manual NVD refresh with an encrypted optional API key, persistent deduplicated cache, freshness/error reporting, and an admin/dashboard UI.
+- **Direct-host MCP (default off):** a separate `host_execute` tool with executable/working-directory/network allowlists, no shell, resource limits, redaction, and audit events. Existing container execution is unchanged.
+
+Configuration, security limitations, endpoints, metrics, and verification commands are in [Docs/RELIABILITY_OPERATIONS.md](Docs/RELIABILITY_OPERATIONS.md).
+
+## Recurring scans and run-aware findings
+
+- **Same-Assessment Scan Runs:** schedules reuse one Assessment while every fire creates a durable queued/running/reviewable run.
+- **Bounded Scan Profiles:** explicit scope and authorization evidence, conservative rate/page/response/timeout limits, and saved policy snapshots.
+- **Canonical findings:** stable fingerprints, idempotent evidence snapshots, and new/recurring/remediated/reopened diffs. Partial runs never claim remediation.
+- **Operator dashboard:** `/runs` provides findings, evidence, diffs, lifecycle events, HTML export, pause/resume/cancel/retry, and viewer-safe read-only behavior.
+
+See [Docs/RECURRING_SCAN_RUNS.md](Docs/RECURRING_SCAN_RUNS.md) for the authorization model, API, operator workflow, migration notes, and verification commands.
+
 ## Documentation
 
 | | |
@@ -241,3 +266,13 @@ Issues and PRs welcome → [GitHub Issues](https://github.com/Vasco0x4/AIDA/issu
   <a href="https://github.com/Vasco0x4/AIDA/issues">Report Bug</a> •
   <a href="mailto:Vasco0x4@proton.me">Contact</a>
 </p>
+
+## Application Security (extended edition)
+
+The separate **Application Security** workspace reviews public or explicitly allowed private GitHub/GitLab repositories, or uploaded ZIP snapshots at a specified commit. It includes Python and JavaScript/TypeScript baseline rules, masked credential findings, npm/Python dependency inventory, optional bounded AI review, JSON/HTML/SARIF reports and Kanban fix tasks. Source code is never executed.
+
+This first release is a source-review baseline: it does not perform dependency advisory lookup, dynamic verification, native PR/MR checks or merge gating. Read the [AppSec guide](Docs/APPSEC.md) for coverage, permissions and source-transfer controls.
+
+Administrators can open **Application Security → Git integrations**, verify a read-only access token, and allow selected repositories. Tokens are encrypted on the backend; connection management includes rotation and revocation. Self-hosted HTTPS Git servers are supported.
+
+See the [verification report](Docs/QA_REPORT.md) for automated coverage, live Kimi and isolated scan results, screenshots, corrected defects and remaining external-service checks.

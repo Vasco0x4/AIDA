@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 /**
  * PendingCommandModal - Modal for validating pending commands
  */
@@ -96,6 +97,27 @@ const PendingCommandModal = ({ pendingCommand, onClose, onApprove, onReject }) =
           {error && (
             <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
               <p className="text-sm text-red-800">{error}</p>
+            </div>
+          )}
+
+          {/* Exploit-class banner (E4 — PoC approval chain) */}
+          {pendingCommand.risk_level === 'high' && (
+            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded-lg">
+              <div className="flex items-center gap-2">
+                <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-red-600 text-white rounded">
+                  exploit-class
+                </span>
+                <p className="text-sm font-semibold text-red-800 dark:text-red-300">
+                  PoC approval chain — weaponizing / exploitation step
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-red-700 dark:text-red-400">
+                Classified as <code className="font-mono">{pendingCommand.risk_reason || 'exploit'}</code>.
+                The agent is paused and polling until this is approved, rejected, or times out.
+                {pendingCommand.timeout_seconds
+                  ? ` Timeout: ${pendingCommand.timeout_seconds}s.` : ''}
+                {' '}Only an administrator may approve exploit-class commands.
+              </p>
             </div>
           )}
 
@@ -207,7 +229,7 @@ const PendingCommandModal = ({ pendingCommand, onClose, onApprove, onReject }) =
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-neutral-300 mb-1">Requested At</label>
               <p className="text-sm text-gray-600 dark:text-neutral-400">
-                {new Date(pendingCommand.created_at).toLocaleString()}
+                {utcDate(pendingCommand.created_at).toLocaleString()}
               </p>
             </div>
           </div>

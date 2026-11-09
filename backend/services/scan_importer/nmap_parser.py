@@ -4,7 +4,7 @@ Nmap Parser - Parse nmap XML output
 # Uploaded scan files are untrusted input. ``defusedxml`` blocks entity
 # expansion (billion-laughs) and external-entity/DTD attacks that the stdlib
 # ``xml.etree.ElementTree`` parser is vulnerable to.
-from defusedxml.ElementTree import fromstring as safe_fromstring
+from defusedxml.ElementTree import ParseError, fromstring as safe_fromstring
 from typing import List
 from .base_parser import BaseParser, ParsedItem, ParseResult, ItemType, ScanType
 
@@ -151,7 +151,7 @@ class NmapParser(BaseParser):
                 stats=stats
             )
             
-        except ET.ParseError as e:
+        except ParseError as e:
             return ParseResult(
                 success=False,
                 scan_type=ScanType.NMAP,

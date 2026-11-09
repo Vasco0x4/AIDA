@@ -1,11 +1,13 @@
+/* eslint-disable react-refresh/only-export-components -- context hooks are the public API */
 /**
  * Authentication Context
  * Manages JWT auth state, login, password change, and logout.
  */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
-  getStoredToken, getStoredUser, clearAuth, storeUser,
-  login as apiLogin, fetchMe, fetchSetupStatus, setupAdmin as apiSetupAdmin,
+  getStoredToken, getStoredUser, clearAuth, storeAuth, storeUser,
+  login as apiLogin, verifyOtp as apiVerifyOtp,
+  fetchMe, fetchSetupStatus, setupAdmin as apiSetupAdmin,
 } from '../services/authService';
 
 const AuthContext = createContext(null);
@@ -69,11 +71,36 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (username, password) => {
     const result = await apiLogin(username, password);
+    if (result.otpRequired) {
+      setBackendUnreachable(false);
+      return result;
+    }
     setToken(result.token);
     setUser(result.user);
     setBackendUnreachable(false);
     window.dispatchEvent(new CustomEvent('aida:auth-loaded'));
     return result;
+  }, []);
+
+  const verifyOtp = useCallback(async (challengeId, code) => {
+    const result = await apiVerifyOtp(challengeId, code);
+    setToken(result.token);
+    setUser(result.user);
+    setBackendUnreachable(false);
+    window.dispatchEvent(new CustomEvent('aida:auth-loaded'));
+    return result;
+  }, []);
+
+  // SSO: consume an OIDC-issued access token (picked up from the /sso hash).
+  const ssoLogin = useCallback(async (rawToken) => {
+    storeAuth(rawToken, null);
+    const freshUser = await fetchMe();
+    storeUser(freshUser);
+    setToken(rawToken);
+    setUser(freshUser);
+    setBackendUnreachable(false);
+    window.dispatchEvent(new CustomEvent('aida:auth-loaded'));
+    return freshUser;
   }, []);
 
   const completeSetup = useCallback(async (username, password, email) => {
@@ -118,7 +145,7 @@ export function AuthProvider({ children }) {
       mustChangePassword,
       setupRequired,
       backendUnreachable,
-      login, logout, refreshUser, completeSetup,
+      login, verifyOtp, logout, refreshUser, completeSetup, ssoLogin,
     }}>
       {children}
     </AuthContext.Provider>

@@ -8,14 +8,19 @@ ensure_secret_key()
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from auth import get_current_user, require_admin, verify_mcp_api_key
+from middleware.rbac import RBACMiddleware
 from config import settings
 from database import init_db
 from api import assessments, cards, recon, sections, containers, folders, global_commands, search, system, credentials, websocket, workspace, pending_commands, context_documents, source_code, auth, reports, timeline, notifications, templates, users, api_keys, asvs_requirements
 from api import commands
+from api import ai_models, tasks, artifacts, knowledge, task_extras, takeover, submission, schedules, branding, scan_runs, scan_profiles
+from api import audit as audit_api
+from api import sso as sso_api
+from api import host, nvd, appsec, git_integrations
 from api.commands import global_router as commands_global_router
 from mcp_http_app import handle_mcp_request, mcp_lifespan
 from utils.logger import setup_logging, get_logger
@@ -41,6 +46,24 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifecycle: run migrations, start MCP session manager, yield."""
     init_db()
+    # Seed built-in offensive-security methodology playbooks (idempotent).
+    try:
+        from database import SessionLocal
+        from services.knowledge_service import KnowledgeService
+        _db = SessionLocal()
+        try:
+            n = KnowledgeService(_db).seed_playbooks()
+            if n:
+                logger.info("Seeded knowledge playbooks", count=n)
+            # Load the offensive-security skill base (skills/*/SKILL.md).
+            from services.skills_loader import load_skills
+            s = load_skills(_db)
+            if s:
+                logger.info("Loaded offensive-security skills", count=s)
+        finally:
+            _db.close()
+    except Exception as e:
+        logger.warning("Knowledge seeding failed (non-fatal)", error=str(e))
     logger.info(
         "Application started",
         project=settings.PROJECT_NAME,
@@ -55,8 +78,28 @@ async def lifespan(app: FastAPI):
     # the lifetime of the app. The ``verify_mcp_api_key`` dependency gates
     # the actual endpoint behind a feature flag, so spinning this up
     # unconditionally is cheap and keeps the wiring simple.
+    # Start the autonomous agent runner and the inbound Telegram bot. Both are
+    # gated at runtime by platform settings (agent_runner_enabled /
+    # telegram_bot_enabled + a configured token), so spinning them up is cheap.
+    from services.agent.runner import runner as agent_runner
+    from services.telegram import telegram_bot
+    from services.scheduler import scheduler as engagement_scheduler
+    from services.nvd_scheduler import nvd_scheduler
     async with mcp_lifespan():
-        yield
+        from services.appsec_worker import appsec_worker
+        appsec_worker.start()
+        agent_runner.start()
+        telegram_bot.start()
+        engagement_scheduler.start()
+        nvd_scheduler.start()
+        try:
+            yield
+        finally:
+            await appsec_worker.stop()
+            await agent_runner.stop()
+            await telegram_bot.stop()
+            await engagement_scheduler.stop()
+            await nvd_scheduler.stop()
 
 
 # Disable the interactive API docs (Swagger UI, ReDoc and the OpenAPI schema)
@@ -81,6 +124,11 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
+# RBAC (E2): role enforcement for every /api route; resolved user is stashed
+# on request.state for the auth dependency to reuse. Added AFTER the rate
+# limiter so limits still apply, BEFORE logging/CORS so denials are visible.
+app.add_middleware(RBACMiddleware)
+
 # Configure logging middleware (before CORS)
 app.add_middleware(LoggingMiddleware)
 
@@ -104,6 +152,8 @@ app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
 app.include_router(websocket.router, prefix=settings.API_V1_PREFIX)
 
 # Protected routers
+app.include_router(git_integrations.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(appsec.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
 app.include_router(assessments.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
 app.include_router(cards.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
 app.include_router(cards.global_router, prefix=settings.API_V1_PREFIX, dependencies=protected)
@@ -129,6 +179,23 @@ app.include_router(timeline.router, prefix=settings.API_V1_PREFIX, dependencies=
 app.include_router(notifications.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
 app.include_router(templates.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
 app.include_router(api_keys.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(ai_models.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(tasks.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(artifacts.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(knowledge.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(task_extras.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(takeover.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(submission.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(schedules.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(scan_runs.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(scan_runs.assessment_router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(scan_profiles.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(branding.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+# Audit trail — RBAC middleware restricts /api/audit* to admins.
+app.include_router(audit_api.router, prefix=settings.API_V1_PREFIX)
+app.include_router(sso_api.router, prefix=settings.API_V1_PREFIX)
+app.include_router(nvd.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
+app.include_router(host.router, prefix=settings.API_V1_PREFIX, dependencies=protected)
 
 # Admin-only router
 app.include_router(
@@ -171,3 +238,15 @@ async def root():
 async def health():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint (see services/metrics.py).
+
+    Unauthenticated like /health — keep it behind the edge in production.
+    """
+    from services.metrics import render
+
+    body, content_type = render()
+    return Response(content=body, media_type=content_type)

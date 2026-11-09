@@ -2,12 +2,12 @@
 Unified Search API endpoint
 """
 import time
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
-from schemas.search import SearchResponse, SearchRequest
+from schemas.search import SearchResponse
 from services.search_service import SearchService
 
 router = APIRouter(prefix="/search", tags=["search"])

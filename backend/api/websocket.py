@@ -55,7 +55,7 @@ async def websocket_global(websocket: WebSocket, token: Optional[str] = None):
                 create_event(EventType.CONNECTED, {"message": "Connected to global events"})
             )
             logger.info("Client connected to global WebSocket")
-        except Exception as e:
+        except Exception:
             # Connection closed before we could send - this is fine
             logger.debug("Could not send connection message (client disconnected early)")
             manager.disconnect(websocket)
@@ -133,7 +133,7 @@ async def websocket_assessment(
                 "Client connected to assessment WebSocket",
                 assessment_id=assessment_id
             )
-        except Exception as e:
+        except Exception:
             # Connection closed before we could send - this is fine
             logger.debug(
                 "Could not send connection message (client disconnected early)",

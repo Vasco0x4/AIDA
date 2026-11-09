@@ -1,3 +1,4 @@
+import { utcDate } from '../utils/utcDate';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -13,6 +14,7 @@ import {
   Play
 } from '../components/icons';
 import CreateAssessmentModal from '../components/assessment/CreateAssessmentModal';
+import NVDDigest from '../components/dashboard/NVDDigest';
 import assessmentService from '../services/assessmentService';
 import apiClient from '../services/api';
 import commandService from '../services/commandService';
@@ -75,6 +77,7 @@ const Dashboard = () => {
   const [allFindings, setAllFindings] = useState([]);
   const [allCommands, setAllCommands] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [timelinePeriod, setTimelinePeriod] = useState('30');
   const [hoveredDay, setHoveredDay] = useState(null);
   const [topTools, setTopTools] = useState([]);
@@ -147,6 +150,7 @@ const Dashboard = () => {
   const loadDashboardData = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
 
       // Fetch all assessments and all findings (one aggregate request instead
       // of one /cards call per assessment).
@@ -182,6 +186,7 @@ const Dashboard = () => {
       }
 
     } catch (error) {
+      setLoadError('Dashboard data could not be loaded. Check the connection and try again.');
       console.error('Failed to load dashboard data:', error);
     } finally {
       setLoading(false);
@@ -198,19 +203,19 @@ const Dashboard = () => {
       : 0;
 
     // Get new findings in last 24h
-    const last24h = new Date();
+    const last24h = utcDate();
     last24h.setDate(last24h.getDate() - 1);
-    const newFindings = allFindings.filter(f => new Date(f.created_at) > last24h).length;
+    const newFindings = allFindings.filter(f => utcDate(f.created_at) > last24h).length;
 
     // Calculate trend (last 7 days vs previous 7 days)
-    const last7days = new Date();
+    const last7days = utcDate();
     last7days.setDate(last7days.getDate() - 7);
-    const last14days = new Date();
+    const last14days = utcDate();
     last14days.setDate(last14days.getDate() - 14);
 
-    const commandsLast7 = allCommands.filter(c => new Date(c.created_at) > last7days).length;
+    const commandsLast7 = allCommands.filter(c => utcDate(c.created_at) > last7days).length;
     const commandsPrev7 = allCommands.filter(c => {
-      const date = new Date(c.created_at);
+      const date = utcDate(c.created_at);
       return date > last14days && date <= last7days;
     }).length;
 
@@ -260,7 +265,7 @@ const Dashboard = () => {
   // Recent findings (last 5)
   const recentFindings = useMemo(() => {
     return [...allFindings]
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .sort((a, b) => utcDate(b.created_at) - utcDate(a.created_at))
       .slice(0, 5);
   }, [allFindings]);
 
@@ -268,7 +273,7 @@ const Dashboard = () => {
   const lastActiveAssessment = useMemo(() => {
     return assessments
       .filter(a => a.status === 'active')
-      .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at))[0];
+      .sort((a, b) => utcDate(b.updated_at || b.created_at) - utcDate(a.updated_at || a.created_at))[0];
   }, [assessments]);
 
   // Handle assessment creation and redirect
@@ -283,19 +288,19 @@ const Dashboard = () => {
   const commandsTimelineData = useMemo(() => {
     const days = parseInt(timelinePeriod);
     const data = [];
-    const now = new Date();
+    const now = utcDate();
     now.setHours(23, 59, 59, 999); // End of today
 
     for (let i = days - 1; i >= 0; i--) {
-      const dayStart = new Date();
+      const dayStart = utcDate();
       dayStart.setDate(now.getDate() - i);
       dayStart.setHours(0, 0, 0, 0);
 
-      const dayEnd = new Date(dayStart);
+      const dayEnd = utcDate(dayStart);
       dayEnd.setHours(23, 59, 59, 999);
 
       const dayCommands = allCommands.filter(c => {
-        const created = new Date(c.created_at);
+        const created = utcDate(c.created_at);
         return created >= dayStart && created <= dayEnd;
       });
 
@@ -303,7 +308,7 @@ const Dashboard = () => {
       const failedCount = dayCommands.filter(c => !c.success).length;
 
       data.push({
-        date: new Date(dayStart),
+        date: utcDate(dayStart),
         success: successCount,
         failed: failedCount,
         total: successCount + failedCount
@@ -350,6 +355,8 @@ const Dashboard = () => {
   const totalSuccess = commandsTimelineData.reduce((sum, d) => sum + d.success, 0);
   const totalFailed = commandsTimelineData.reduce((sum, d) => sum + d.failed, 0);
 
+  if (loadError && !loading) return <section className="aida-page-header space-y-4"><h1 className="text-2xl font-bold">Dashboard</h1><p role="alert" className="text-rose-700 dark:text-rose-300">{loadError}</p><p className="text-sm text-neutral-500">Statistics are unavailable, not zero.</p><button className="btn btn-primary" onClick={loadDashboardData}>Retry loading dashboard</button></section>;
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -361,14 +368,16 @@ const Dashboard = () => {
   return (
     <div className="space-y-6 animate-in">
       {/* Header with Quick Actions */}
-      <div className="flex items-center justify-between">
+      <div className="aida-page-header flex flex-wrap items-start justify-between gap-4">
         <div>
+          <p className="aida-eyebrow">Security workspace</p>
           <h1 className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">Dashboard</h1>
           <p className="mt-1 text-neutral-600 dark:text-neutral-400">
-            Real-time security assessment analytics
+            Your assessments, activity and findings in one place.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 max-w-xl">
+          <Link to="/getting-started" className="btn btn-secondary">Workspace checks</Link>
           <button
             onClick={() => setIsCreateModalOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
@@ -382,7 +391,7 @@ const Dashboard = () => {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-700 rounded-md transition-colors"
             >
               <Play className="w-3.5 h-3.5" />
-              Resume {lastActiveAssessment.name}
+              Open latest assessment
             </Link>
           )}
         </div>
@@ -396,12 +405,16 @@ const Dashboard = () => {
         />
       )}
 
+      <div className="grid gap-3 md:grid-cols-3">
+        {[['/board', 'Task Board', 'Plan work, queue agents and review results.'], ['/schedules', 'Scheduled scans', 'Set up recurring checks in your timezone.'], ['/runs', 'Run history', 'Follow execution, evidence and finding changes.']].map(([to, title, description]) =>
+          <Link key={to} to={to} className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-4 hover:border-primary-500 transition-colors"><p className="font-semibold text-sm">{title} →</p><p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">{description}</p></Link>)}
+      </div>
       {/* KPIs - Compact sans cadres lourds */}
-      <div className="grid grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-6">
         {/* Total Commands */}
-        <div className="space-y-1">
+        <div className="aida-metric-card">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Commands</span>
+            <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Commands · all time</span>
             <Terminal className="w-4 h-4 text-neutral-400 dark:text-neutral-500" />
           </div>
           <div className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{kpis.totalCommands}</div>
@@ -422,9 +435,9 @@ const Dashboard = () => {
         </div>
 
         {/* Active Assessments */}
-        <div className="space-y-1">
+        <div className="aida-metric-card">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Active</span>
+            <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Active assessments</span>
             <Activity className="w-4 h-4 text-neutral-400 dark:text-neutral-500" />
           </div>
           <div className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{kpis.activeAssessments}</div>
@@ -432,7 +445,7 @@ const Dashboard = () => {
         </div>
 
         {/* Total Findings */}
-        <div className="space-y-1">
+        <div className="aida-metric-card">
           <div className="flex items-center justify-between">
             <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Findings</span>
             <Shield className="w-4 h-4 text-neutral-400 dark:text-neutral-500" />
@@ -447,9 +460,9 @@ const Dashboard = () => {
         </div>
 
         {/* Success Rate */}
-        <div className="space-y-1">
+        <div className="aida-metric-card">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Success Rate</span>
+            <span className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">Command success · all time</span>
             <FileText className="w-4 h-4 text-neutral-400 dark:text-neutral-500" />
           </div>
           <div className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{kpis.successRate}%</div>
@@ -480,7 +493,7 @@ const Dashboard = () => {
 
         {commandsTimelineData.length > 0 && commandsTimelineData.some(d => d.total > 0) ? (
           <>
-            <div className="relative" style={{ height: '300px' }}>
+            <div className="relative" style={{ height: '220px' }}>
               {/* Y-axis */}
               <div className="absolute left-0 top-0 bottom-12 w-12 flex flex-col justify-between text-xs text-neutral-500 dark:text-neutral-400 text-right pr-3">
                 {[...Array(6)].map((_, i) => {
@@ -895,6 +908,8 @@ const Dashboard = () => {
         </div>
       </div>
 
+      <NVDDigest />
+
       {/* Recent Findings Table */}
       <div className="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
@@ -946,8 +961,8 @@ const Dashboard = () => {
                     <td className="py-3 px-3 text-right">
                       <span className="text-xs text-neutral-500 dark:text-neutral-400">
                         {(() => {
-                          const now = new Date();
-                          const created = new Date(finding.created_at);
+                          const now = utcDate();
+                          const created = utcDate(finding.created_at);
                           const diffMs = now - created;
                           const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
                           const diffDays = Math.floor(diffHours / 24);

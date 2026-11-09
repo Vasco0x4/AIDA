@@ -1,0 +1,21 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import Dashboard from './Dashboard';
+import api from '../services/api';
+vi.mock('../services/api', () => ({ default: { get: vi.fn() } }));
+vi.mock('../services/commandService', () => ({ default: { getAllCommands: vi.fn().mockResolvedValue({ commands: [], has_more: false }) } }));
+vi.mock('../services/toolStatsService', () => ({ default: { getTopTools: vi.fn().mockResolvedValue([]) } }));
+vi.mock('../contexts/WebSocketContext', () => ({ useWebSocketContext: () => ({ subscribe: () => () => {} }) }));
+vi.mock('../components/dashboard/NVDDigest', () => ({ default: () => null }));
+it('reports unavailable statistics and recovers when the user retries', async () => {
+  api.get.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ data: [] });
+  const user = userEvent.setup();
+  render(<MemoryRouter><Dashboard /></MemoryRouter>);
+  expect(await screen.findByRole('alert')).toHaveTextContent('could not be loaded');
+  expect(screen.getByText('Statistics are unavailable, not zero.')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: /retry loading/i }));
+  expect(await screen.findByText('Commands · all time')).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
