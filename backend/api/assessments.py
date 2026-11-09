@@ -3,10 +3,11 @@ Assessment CRUD API endpoints
 """
 from typing import List, Optional
 from datetime import date, datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Body, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+from services.audit_service import record as audit
 from database import get_db
 from models import Assessment, AssessmentSection, Card, ReconData, Folder, CommandHistory
 from schemas.assessment import (
@@ -102,6 +103,44 @@ async def get_assessment(
             detail=f"Assessment with id {assessment_id} not found"
         )
     return assessment
+
+
+@router.get("/{assessment_id}/compliance")
+async def get_assessment_compliance(
+    assessment_id: int,
+    framework: str = None,
+    db: Session = Depends(get_db)
+):
+    """Compliance mapping of the assessment's findings (E4): OWASP Top 10 /
+    PCI DSS v4.0 / NIST CSF 2.0. Pass ?framework=owasp for a single one."""
+    if not db.query(Assessment).filter(Assessment.id == assessment_id).first():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Assessment with id {assessment_id} not found")
+    from services.compliance_registry import FRAMEWORKS, map_assessment
+    if framework is not None and framework not in FRAMEWORKS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown framework {framework!r}; expected one of {sorted(FRAMEWORKS)}")
+    return map_assessment(db, assessment_id, framework)
+
+
+@router.get("/{assessment_id}/diff/{baseline_id}")
+async def diff_assessment_findings(
+    assessment_id: int,
+    baseline_id: int,
+    db: Session = Depends(get_db)
+):
+    """Diff this assessment's findings (the newer audit) against another
+    assessment (the baseline): new / fixed / persistent findings — the
+    recurring-audit view (E4)."""
+    for aid in (assessment_id, baseline_id):
+        if not db.query(Assessment).filter(Assessment.id == aid).first():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Assessment with id {aid} not found")
+    from services.findings_diff import diff_assessments
+    return diff_assessments(db, old_id=baseline_id, new_id=assessment_id)
 
 
 @router.get("/{assessment_id}/full")
@@ -214,6 +253,7 @@ async def update_assessment(
 @router.delete("/{assessment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_assessment(
     assessment_id: int,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """Delete an assessment"""
@@ -229,6 +269,9 @@ async def delete_assessment(
 
     # Broadcast WebSocket event
     await manager.broadcast(event_assessment_deleted(assessment_id))
+    audit(db, action="assessment.deleted", request=request,
+          resource_type="assessment", resource_id=assessment_id,
+          detail={"name": assessment.name})
     logger.info("Assessment deleted", assessment_id=assessment_id)
 
     return None
@@ -373,9 +416,16 @@ async def move_assessment(
         )
 
     folder_id = request_data.get('folder_id')
-    
+
     # Validate folder exists if provided
     if folder_id is not None:
+        # The body is a raw dict: reject non-integer folder_id here instead of
+        # letting it blow up as a DB DataError (500) further down.
+        if isinstance(folder_id, bool) or not isinstance(folder_id, int):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="folder_id must be an integer or null"
+            )
         folder = db.query(Folder).filter(Folder.id == folder_id).first()
         if not folder:
             raise HTTPException(

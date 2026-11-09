@@ -151,7 +151,7 @@ class ConnectionManager:
                 "Sent personal message",
                 event_type=event.get("type")
             )
-        except RuntimeError as e:
+        except RuntimeError:
             # Connection already closed - this is normal behavior
             logger.debug(
                 "Could not send personal message (connection closed)",

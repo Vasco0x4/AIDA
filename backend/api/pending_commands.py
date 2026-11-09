@@ -2,14 +2,14 @@
 Pending Commands and Command Settings API endpoints
 """
 import json
-from typing import Optional, List
-from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from database import get_db, get_async_db
+from database import SessionLocal, get_db, get_async_db
 from models import PendingCommand, Assessment, PlatformSettings
 from schemas.pending_command import (
     PendingCommandResponse, 
@@ -21,23 +21,15 @@ from schemas.pending_command import (
     PendingCommandsListResponse
 )
 from services.container_service import ContainerService
+from services.audit_service import record as audit
 from schemas.command import HttpRequestRequest
 from websocket.manager import manager
-from websocket.events import create_event, EventType
-from config import settings as app_settings
 
 router = APIRouter(prefix="/pending-commands", tags=["pending-commands"])
 settings_router = APIRouter(prefix="/command-settings", tags=["command-settings"])
 
-# Default settings.
-# Localhost deployments default to "closed" because every command runs on the
-# user's real host — we want all-hands approval out of the box. Container
-# deployments keep the legacy "open" default since the pentest container is
-# sandboxed.
-def _default_execution_mode() -> str:
-    return "closed" if app_settings.DEPLOYMENT_MODE == "localhost" else "open"
-
-DEFAULT_EXECUTION_MODE = _default_execution_mode()
+# Default settings
+DEFAULT_EXECUTION_MODE = "open"
 DEFAULT_FILTER_KEYWORDS = ["rm", "delete", "drop", "truncate", "sudo", "chmod", "chown", "mkfs", "dd", "format"]
 DEFAULT_TIMEOUT_SECONDS = 30  # 30 seconds
 DEFAULT_HTTP_METHOD_RULES = {}  # All methods inherit global mode by default
@@ -63,11 +55,24 @@ def get_command_settings(db: Session) -> dict:
         PlatformSettings.key == "command_http_method_rules"
     ).first()
 
+    exploit_setting = db.query(PlatformSettings).filter(
+        PlatformSettings.key == "exploit_approval"
+    ).first()
+    exploit_admin_setting = db.query(PlatformSettings).filter(
+        PlatformSettings.key == "exploit_admin_approval"
+    ).first()
+    exploit_timeout_setting = db.query(PlatformSettings).filter(
+        PlatformSettings.key == "exploit_approval_timeout"
+    ).first()
+
     return {
-        "execution_mode": mode_setting.value if mode_setting else _default_execution_mode(),
+        "execution_mode": mode_setting.value if mode_setting else DEFAULT_EXECUTION_MODE,
         "filter_keywords": json.loads(keywords_setting.value) if keywords_setting else DEFAULT_FILTER_KEYWORDS,
         "timeout_seconds": int(timeout_setting.value) if timeout_setting else DEFAULT_TIMEOUT_SECONDS,
         "http_method_rules": json.loads(http_method_rules_setting.value) if http_method_rules_setting else DEFAULT_HTTP_METHOD_RULES,
+        "exploit_approval": exploit_setting.value if exploit_setting else "on",
+        "exploit_admin_approval": (exploit_admin_setting.value if exploit_admin_setting else "true").lower() in ("true", "1", "yes", "on"),
+        "exploit_approval_timeout": int(exploit_timeout_setting.value) if exploit_timeout_setting else 600,
     }
 
 
@@ -148,7 +153,7 @@ async def get_settings(db: Session = Depends(get_db)):
     except Exception:
         # Return defaults if database error
         return CommandSettingsResponse(
-            execution_mode=_default_execution_mode(),
+            execution_mode=DEFAULT_EXECUTION_MODE,
             filter_keywords=DEFAULT_FILTER_KEYWORDS,
             timeout_seconds=DEFAULT_TIMEOUT_SECONDS
         )
@@ -204,6 +209,30 @@ async def update_settings(
             json.dumps(update.http_method_rules),
             "Per-HTTP-method approval rules: auto_approve, require_approval, or inherit"
         )
+
+    # E4 PoC approval chain settings
+    if update.exploit_approval is not None:
+        if update.exploit_approval not in ("on", "off"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="exploit_approval must be 'on' or 'off'")
+        set_command_setting(db, "exploit_approval", update.exploit_approval,
+                            "Exploit-class commands require human approval")
+    if update.exploit_admin_approval is not None:
+        set_command_setting(
+            db, "exploit_admin_approval",
+            "true" if update.exploit_admin_approval else "false",
+            "High-risk (exploit-class) approvals require an admin")
+    if update.exploit_approval_timeout is not None:
+        if not 30 <= update.exploit_approval_timeout <= 86400:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="exploit_approval_timeout must be 30..86400 seconds")
+        set_command_setting(
+            db, "exploit_approval_timeout", str(update.exploit_approval_timeout),
+            "Seconds an agent waits for a human exploit-approval decision")
+    from services.agent.agent_settings import invalidate_settings_cache
+    invalidate_settings_cache()
 
     # Broadcast settings change
     await manager.broadcast({
@@ -294,6 +323,8 @@ async def list_pending_commands(
             "command": cmd.command,
             "phase": cmd.phase,
             "matched_keywords": cmd.matched_keywords or [],
+            "risk_level": cmd.risk_level or "normal",
+            "risk_reason": cmd.risk_reason,
             "status": cmd.status,
             "resolved_by": cmd.resolved_by,
             "rejection_reason": cmd.rejection_reason,
@@ -350,6 +381,8 @@ async def get_pending_command(
         command=cmd.command,
         phase=cmd.phase,
         matched_keywords=cmd.matched_keywords or [],
+        risk_level=cmd.risk_level or "normal",
+        risk_reason=cmd.risk_reason,
         status=cmd.status,
         resolved_by=cmd.resolved_by,
         rejection_reason=cmd.rejection_reason,
@@ -363,6 +396,7 @@ async def get_pending_command(
 async def approve_command(
     command_id: int,
     approval: PendingCommandApprove,
+    request: Request,
     db: AsyncSession = Depends(get_async_db)
 ):
     """Approve and execute a pending command"""
@@ -382,7 +416,32 @@ async def approve_command(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Command is already {pending_cmd.status}"
         )
-    
+
+    # E4 PoC approval chain: exploit-class commands carry an escalation level —
+    # when exploit_admin_approval is on, only an ADMIN may sign them off.
+    # (Normal commands stay approvable by any auditor.)
+    user = getattr(request.state, "user", None)
+    if (pending_cmd.risk_level == "high"):
+        admin_setting = (await db.execute(
+            select(PlatformSettings).filter(
+                PlatformSettings.key == "exploit_admin_approval")
+        )).scalar_one_or_none()
+        needs_admin = (admin_setting.value if admin_setting else "true").lower() \
+            in ("true", "1", "yes", "on")
+        if needs_admin and getattr(user, "role", None) != "admin":
+            audit(SessionLocal(), action="command.approval_denied", request=request,
+                  resource_type="pending_command", resource_id=command_id,
+                  detail={"reason": "admin_required",
+                          "role": getattr(user, "role", None)})
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This is an exploit-class command (PoC approval chain) — "
+                       "only an admin may approve it.")
+
+    # Record WHO approved: the authenticated identity wins over the
+    # client-supplied string (non-repudiation for the approval chain).
+    approver = getattr(user, "username", None) or approval.approved_by
+
     # Execute the command — route based on command_type
     container_service = ContainerService()
     try:
@@ -414,7 +473,7 @@ async def approve_command(
         # if execution raises — bad JSON payload, container down, etc. Mark it
         # as failed and surface the error to the caller.
         pending_cmd.status = "failed"
-        pending_cmd.resolved_by = approval.approved_by
+        pending_cmd.resolved_by = approver
         pending_cmd.resolved_at = datetime.utcnow()
         pending_cmd.rejection_reason = f"Execution failed: {e}"
         pending_cmd.execution_result = {"success": False, "error": str(e)}
@@ -427,7 +486,7 @@ async def approve_command(
 
     # Update pending command
     pending_cmd.status = "executed"
-    pending_cmd.resolved_by = approval.approved_by
+    pending_cmd.resolved_by = approver
     pending_cmd.resolved_at = datetime.utcnow()
     pending_cmd.execution_result = {
         "stdout": exec_result.stdout,
@@ -438,6 +497,9 @@ async def approve_command(
     
     await db.commit()
     await db.refresh(pending_cmd)
+    audit(SessionLocal(), action="command.approved", request=request,
+          resource_type="pending_command", resource_id=command_id,
+          detail={"command": (pending_cmd.command or "")[:200]})
     
     # Broadcast approval to assessment-specific connections
     await manager.broadcast({
@@ -469,6 +531,8 @@ async def approve_command(
         command=pending_cmd.command,
         phase=pending_cmd.phase,
         matched_keywords=pending_cmd.matched_keywords or [],
+        risk_level=pending_cmd.risk_level or "normal",
+        risk_reason=pending_cmd.risk_reason,
         status=pending_cmd.status,
         resolved_by=pending_cmd.resolved_by,
         rejection_reason=pending_cmd.rejection_reason,
@@ -483,6 +547,7 @@ async def approve_command(
 async def reject_command(
     command_id: int,
     rejection: PendingCommandReject,
+    request: Request,
     db: AsyncSession = Depends(get_async_db)
 ):
     """Reject a pending command"""
@@ -502,14 +567,19 @@ async def reject_command(
             detail=f"Command is already {pending_cmd.status}"
         )
     
-    # Update pending command
+    # Update pending command (identity: the authenticated user wins over the
+    # client-supplied string).
     pending_cmd.status = "rejected"
-    pending_cmd.resolved_by = rejection.rejected_by
+    user = getattr(request.state, "user", None)
+    pending_cmd.resolved_by = getattr(user, "username", None) or rejection.rejected_by
     pending_cmd.rejection_reason = rejection.rejection_reason
     pending_cmd.resolved_at = datetime.utcnow()
     
     await db.commit()
     await db.refresh(pending_cmd)
+    audit(SessionLocal(), action="command.rejected", request=request,
+          resource_type="pending_command", resource_id=command_id,
+          detail={"reason": (rejection.reason or "")[:200] if hasattr(rejection, "reason") else None})
     
     # Broadcast rejection to assessment-specific connections
     await manager.broadcast({
@@ -541,6 +611,8 @@ async def reject_command(
         command=pending_cmd.command,
         phase=pending_cmd.phase,
         matched_keywords=pending_cmd.matched_keywords or [],
+        risk_level=pending_cmd.risk_level or "normal",
+        risk_reason=pending_cmd.risk_reason,
         status=pending_cmd.status,
         resolved_by=pending_cmd.resolved_by,
         rejection_reason=pending_cmd.rejection_reason,
@@ -554,6 +626,7 @@ async def reject_command(
 @router.delete("/{command_id}")
 async def delete_pending_command(
     command_id: int,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """Delete a pending command"""
@@ -567,6 +640,8 @@ async def delete_pending_command(
     
     db.delete(cmd)
     db.commit()
+    audit(db, action="command.deleted", request=request,
+          resource_type="pending_command", resource_id=command_id)
     
     return {"message": f"Pending command {command_id} deleted"}
 
@@ -626,7 +701,10 @@ async def create_pending_command(
         command=pending_cmd.command,
         phase=pending_cmd.phase,
         matched_keywords=pending_cmd.matched_keywords or [],
+        risk_level=pending_cmd.risk_level or "normal",
+        risk_reason=pending_cmd.risk_reason,
         status=pending_cmd.status,
+        timeout_seconds=pending_cmd.timeout_seconds,
         resolved_by=None,
         rejection_reason=None,
         resolved_at=None,

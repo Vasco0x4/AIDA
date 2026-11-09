@@ -55,7 +55,7 @@ async def get_system_status(db: Session = Depends(get_db)):
             connected=True,
             version=version
         )
-    except Exception as e:
+    except Exception:
         database_status = DatabaseStatus(
             status="error",
             connected=False,
@@ -93,7 +93,7 @@ async def get_system_status(db: Session = Depends(get_db)):
                 running=False,
                 container=""
             )
-    except Exception as e:
+    except Exception:
         exegol_status = ExegolStatus(
             status="error",
             running=False,
@@ -180,6 +180,18 @@ async def get_platform_setting(key: str, db: Session = Depends(get_db)):
                 key=key,
                 value=str(settings.MAX_SOURCE_ZIP_SIZE // (1024 * 1024)),
                 description="Maximum size (MB) for a source-code ZIP uploaded to /source"
+            )
+        if key == "theme":
+            return PlatformSettingResponse(
+                key=key, value="light", description="UI theme: light / dark"
+            )
+        if key == "primary_color":
+            return PlatformSettingResponse(
+                key=key, value="cyan", description="UI accent color preset"
+            )
+        if key == "telegram_bot_enabled":
+            return PlatformSettingResponse(
+                key=key, value="false", description="Enable the inbound Telegram bot (default: off)"
             )
         if key == "mcp_http_enabled":
             return PlatformSettingResponse(
@@ -366,7 +378,6 @@ async def get_tool_usage_stats(
     - top_n: Number of top tools to return (default: 20, max: 100)
     """
     from datetime import datetime, timedelta
-    from sqlalchemy import func, and_
     from models import CommandHistory, Assessment
     from schemas.tool_stats import (
         ToolUsageStatsResponse, ToolUsage, ToolCategoryStats, AssessmentToolUsage
@@ -576,7 +587,7 @@ async def open_folder(request: OpenFolderRequest):
     if not is_allowed:
         raise fastapi.HTTPException(
             status_code=403,
-            detail=f"Access denied: Cannot open paths outside of allowed directories"
+            detail="Access denied: Cannot open paths outside of allowed directories"
         )
     
     # Check if path exists (on host or just return success for container paths)

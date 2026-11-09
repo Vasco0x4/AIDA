@@ -1,9 +1,8 @@
 """
 Search Pydantic schemas
 """
-from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 
 class SearchResult(BaseModel):

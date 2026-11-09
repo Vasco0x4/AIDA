@@ -1,7 +1,7 @@
 """
 Folder SQLAlchemy model for organizing assessments
 """
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, Boolean
+from sqlalchemy import Column, Integer, String, Text, TIMESTAMP
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from database import Base

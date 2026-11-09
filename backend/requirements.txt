@@ -19,7 +19,11 @@ passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 alembic==1.18.4
 slowapi==0.1.9
+prometheus-client==0.21.1
 weasyprint==68.1
 jinja2==3.1.6
 markdown==3.10.2
 defusedxml==0.7.1
+pypdf==6.1.1
+croniter==6.2.4
+qrcode==8.2

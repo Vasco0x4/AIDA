@@ -13,7 +13,6 @@ that the FastAPI ``lifespan`` function chains with its own startup code.
 """
 from __future__ import annotations
 
-import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path

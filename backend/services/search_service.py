@@ -3,7 +3,7 @@ Unified search service with fuzzy matching and scoring
 """
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func, case
+from sqlalchemy import or_
 from datetime import datetime, timedelta
 
 from models import Assessment, CommandHistory, Card, ReconData

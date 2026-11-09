@@ -1,0 +1,35 @@
+# Tooling config for the backend (pytest + ruff). Ruff runs with the default
+# error-class selection (real bugs: undefined names, unused imports, syntax
+# errors) — style-only rules stay off until the codebase is gradually cleaned.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = ["alembic", "venv", "logs"]
+
+[tool.ruff.lint]
+# E4/E7/E9 + F: syntax errors, undefined names, redefinitions, unused imports.
+# Deliberately NOT style rules (E501 etc.) — see header comment.
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E501",
+    # E711/E712: `Column == True/None` is the CORRECT form inside SQLAlchemy
+    # .filter() — ruff's fix (`is True`) would break the SQL expression.
+    "E711",
+    "E712",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# main.py runs bootstrap_secrets BEFORE all imports on purpose (security:
+# never let the app boot with the legacy hardcoded JWT key).
+"main.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "models", "schemas", "services", "middleware", "utils"]

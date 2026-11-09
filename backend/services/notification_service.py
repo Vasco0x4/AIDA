@@ -129,7 +129,7 @@ class NotificationService:
 
         lines = []
         lines.append(f"{'='*40}")
-        lines.append(f"AIDA Assessment Report")
+        lines.append("AIDA Assessment Report")
         lines.append(f"{'='*40}")
         lines.append(f"Name: {assessment.name}")
         if assessment.client_name:
@@ -228,7 +228,7 @@ class NotificationService:
         from services.report_service import generate_pdf_report
 
         try:
-            pdf_buffer = generate_pdf_report(self.db, assessment_id)
+            pdf_buffer = await generate_pdf_report(self.db, assessment_id)
         except Exception as e:
             return False, f"Failed to generate PDF: {str(e)}"
 
@@ -257,6 +257,9 @@ class NotificationService:
                 await self._send_slack_file(config.config, file_bytes, filename, caption)
             elif config.channel == "email":
                 await self._send_email_file(config.config, file_bytes, filename, caption)
+            elif config.channel == "webhook":
+                # Webhooks can't carry attachments — send the notice instead.
+                await self._send_webhook(config.config, caption)
             else:
                 raise ValueError(f"Unknown channel: {config.channel}")
         except Exception as e:
@@ -331,11 +334,45 @@ class NotificationService:
                 await self._send_slack(config.config, message)
             elif config.channel == "email":
                 await self._send_email(config.config, message)
+            elif config.channel == "webhook":
+                await self._send_webhook(config.config, message)
             else:
                 logger.warning("Unknown notification channel", channel=config.channel)
         except Exception as e:
             logger.error("Failed to send notification", channel=config.channel, error=str(e))
             raise
+
+    async def _send_webhook(self, cfg: Dict[str, Any], message: str):
+        """Generic outbound webhook (E4) — the Jira/integration bridge.
+
+        POSTs a JSON payload ({event, text, timestamp}) to the configured URL.
+        When a ``secret`` is set, the body is HMAC-SHA256-signed in the
+        ``X-AIDA-Signature`` header (``sha256=<hexdigest>``) so the receiving
+        side (Jira automation, Slack ingest, SOAR) can verify authenticity."""
+        import hashlib
+        import hmac
+        import json as _json
+        from datetime import datetime, timezone
+
+        url = cfg.get("url", "")
+        if not url:
+            raise ValueError("Webhook url is required")
+        payload = _json.dumps({
+            "event": "notification",
+            "text": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        secret = cfg.get("secret", "")
+        if secret:
+            headers["X-AIDA-Signature"] = "sha256=" + hmac.new(
+                secret.encode(), payload, hashlib.sha256).hexdigest()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, content=payload, headers=headers)
+            if resp.status_code >= 300:
+                raise RuntimeError(
+                    f"Webhook error: {resp.status_code} - {resp.text[:200]}")
+        logger.info("Webhook notification sent", url=url)
 
     async def _send_telegram(self, cfg: Dict[str, Any], message: str):
         bot_token = cfg.get("bot_token", "")

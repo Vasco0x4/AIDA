@@ -1,19 +1,5 @@
 """
-Container Service - Command execution + database logging layer.
-
-This service is the public entry point used by API routes (commands.py,
-pending_commands.py). It handles:
-
-  - Resolving the active execution target (container name or "localhost")
-  - Creating/refreshing workspaces for an assessment
-  - Executing shell / Python / HTTP-request commands
-  - Logging every command to `CommandHistory` and broadcasting results
-    over the WebSocket manager
-
-The "how do I actually run a command" part is delegated to an
-`ExecutionBackend` (see `services/execution/`). In container mode that's
-a docker-exec wrapper; in localhost mode it's a Unix-socket call to the
-aida-host-agent daemon on the host. This service layer is agnostic.
+Container Service - Docker container management and command execution for pentesting containers
 """
 import asyncio
 import json
@@ -21,7 +7,6 @@ import shlex
 import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
@@ -30,64 +15,72 @@ from models import CommandHistory, Assessment
 from models.platform_settings import PlatformSettings
 from config import settings
 from utils.logger import get_logger
-from utils.log_context import log_context, timed_operation
 from utils.subprocess_runner import run_subprocess
 from websocket.manager import manager
 from websocket.events import event_command_completed, event_command_failed, EventType, create_event
-
-from services.execution import (
-    ExecResult,
-    ExecutionBackend,
-    get_execution_backend,
-)
 
 logger = get_logger(__name__)
 
 
 class ContainerService:
-    """Public command-execution API used by the FastAPI routes."""
-
     def __init__(self):
-        # In container mode, this is the Docker container name (aida-pentest
-        # or an Exegol variant). In localhost mode, it's the synthetic
-        # "localhost" label so UI filters, CommandHistory rows, and logs
-        # have a consistent value to key on.
-        self.current_container: Optional[str] = (
-            settings.LOCALHOST_CONTAINER_LABEL
-            if settings.DEPLOYMENT_MODE == "localhost"
-            else settings.DEFAULT_CONTAINER_NAME
-        )
-        # Discovery cache (container mode only — localhost has no list).
+        self.current_container: Optional[str] = settings.DEFAULT_CONTAINER_NAME
         self.containers_cache: List[Dict[str, Any]] = []
         self.cache_timestamp: float = 0
         self.cache_ttl: int = 30
+        self.container_health_cache: Dict[str, tuple[float, str, bool]] = {}
+        self.health_cache_ttl: int = 30
+        self.max_health_cache_entries: int = 100
 
-    # ========== Utility helpers ==========
+    def _clean_health_cache(self):
+        """Remove expired entries from health cache to prevent memory leak"""
+        current_time = time.time()
+
+        # Remove expired entries
+        expired_keys = [
+            key for key, (timestamp, _, _) in self.container_health_cache.items()
+            if (current_time - timestamp) > self.health_cache_ttl
+        ]
+        for key in expired_keys:
+            del self.container_health_cache[key]
+
+        # If still too many entries, remove oldest
+        if len(self.container_health_cache) > self.max_health_cache_entries:
+            sorted_items = sorted(
+                self.container_health_cache.items(),
+                key=lambda x: x[1][0]
+            )
+            self.container_health_cache = dict(sorted_items[-self.max_health_cache_entries:])
 
     @staticmethod
     def _sanitize_output(output: str) -> str:
-        """Strip null bytes + replace invalid UTF-8.
+        """Sanitize command output to remove null bytes and invalid UTF-8 characters
 
-        Postgres with UTF-8 encoding can't store 0x00 bytes, and some
-        pentesting tools emit them (notably binary protocols dumped to
-        stdout). The execution backends already apply this, but we do
-        it again before DB insert as a belt-and-braces guarantee.
+        PostgreSQL with UTF-8 encoding cannot store null bytes (0x00) or invalid UTF-8 sequences.
+        This function cleans the output to ensure it can be safely stored in the database.
+
+        Args:
+            output: Raw command output string
+
+        Returns:
+            Sanitized string safe for PostgreSQL UTF-8 storage
         """
         if not output:
             return output
-        sanitized = output.replace("\x00", "")
-        return sanitized.encode("utf-8", errors="replace").decode(
-            "utf-8", errors="replace"
-        )
+
+        # Remove null bytes (0x00) - PostgreSQL UTF-8 cannot store them
+        sanitized = output.replace('\x00', '')
+
+        # Encode to UTF-8, replacing invalid sequences with replacement character
+        # This handles any other encoding issues
+        sanitized = sanitized.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+
+        return sanitized
 
     async def _run_command(self, command: List[str], timeout: float = 30.0) -> Dict[str, Any]:
         """Run a system command with a timeout to prevent hangs on docker socket
         issues. The process lifecycle, timeout and output cap live in the shared
         ``run_subprocess`` helper; this wrapper keeps the service's return shape.
-
-        Kept for parts of the codebase that still `docker ps`, `docker inspect`,
-        etc. directly. Assessment command execution goes through
-        ``self._get_backend()`` instead.
         """
         result = await run_subprocess(command, timeout)
         out = {
@@ -97,78 +90,52 @@ class ContainerService:
             "stderr": result["stderr"],
         }
         if result["status"] == "not_found":
+            # docker binary missing / not on PATH
             out["stderr"] = f"Executable not found: {result.get('raw_error', '')}"
             out["error_type"] = "executable_not_found"
         elif result["status"] == "failed":
             out["stderr"] = str(result.get("raw_error", ""))
         return out
 
-    def _get_backend(self, container_name: Optional[str] = None) -> ExecutionBackend:
-        """Build the execution backend matching the current deployment mode."""
-        return get_execution_backend(container_name or self.current_container)
-
-    # ========== Container discovery (container mode only) ==========
-
     async def discover_containers(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
-        """List candidate pentest containers on this host.
-
-        In localhost mode there's no list to return — the single target is
-        the host itself, surfaced as a synthetic "localhost" entry so any
-        upstream UI or logic that iterates containers keeps working.
-        """
-        if settings.DEPLOYMENT_MODE == "localhost":
-            # Report the host-agent's health as the "status" of the
-            # synthetic container. Makes the Settings UI show a red dot
-            # when the daemon isn't reachable.
-            backend = self._get_backend(settings.LOCALHOST_CONTAINER_LABEL)
-            health = await backend.validate_ready()
-            status = "running" if health.get("success") else "unreachable"
-            return [
-                {
-                    "name": settings.LOCALHOST_CONTAINER_LABEL,
-                    "image": "(host)",
-                    "status": status,
-                    "id": "localhost",
-                }
-            ]
-
+        """Discover Exegol containers"""
         current_time = time.time()
-        if (
-            not force_refresh
-            and self.containers_cache
-            and (current_time - self.cache_timestamp) < self.cache_ttl
-        ):
+
+        if (not force_refresh and
+                self.containers_cache and
+                (current_time - self.cache_timestamp) < self.cache_ttl):
             return self.containers_cache
 
-        containers: List[Dict[str, Any]] = []
+        containers = []
+
         try:
-            result = await self._run_command(
-                ["docker", "ps", "-a", "--format", "json"]
-            )
+            result = await self._run_command([
+                "docker", "ps", "-a",
+                "--format", "json"
+            ])
+
             if result["success"] and result["stdout"]:
-                for line in result["stdout"].split("\n"):
-                    if not line.strip():
-                        continue
-                    try:
-                        container_data = json.loads(line)
-                        container_name = container_data.get("Names", "unknown").lstrip("/")
-                        image = container_data.get("Image", "")
-                        allowed_prefixes = tuple(
-                            p.strip()
-                            for p in settings.CONTAINER_PREFIX_FILTER.split(",")
-                            if p.strip()
-                        )
-                        if container_name.lower().startswith(allowed_prefixes):
-                            containers.append(
-                                {
+                for line in result["stdout"].split('\n'):
+                    if line.strip():
+                        try:
+                            container_data = json.loads(line)
+                            container_name = container_data.get("Names", "unknown").lstrip('/')
+                            image = container_data.get("Image", "")
+
+                            # Accept containers matching any configured prefix (aida-, exegol-, ...)
+                            allowed_prefixes = tuple(
+                                p.strip() for p in settings.CONTAINER_PREFIX_FILTER.split(",") if p.strip()
+                            )
+                            if container_name.lower().startswith(allowed_prefixes):
+                                containers.append({
                                     "name": container_name,
                                     "image": image,
                                     "status": container_data.get("State", "unknown"),
                                     "id": container_data.get("ID", "unknown")[:12],
-                                }
-                            )
-                    except json.JSONDecodeError:
-                        continue
+                                })
+                        except json.JSONDecodeError:
+                            continue
+
         except Exception:
             containers = []
 
@@ -177,185 +144,272 @@ class ContainerService:
         return containers
 
     async def select_container(self, container_name: str) -> Dict[str, Any]:
-        """Pick the active execution target.
-
-        Only meaningful in container mode. Localhost mode is single-target
-        so we accept the request silently and keep the label.
-        """
-        if settings.DEPLOYMENT_MODE == "localhost":
-            self.current_container = settings.LOCALHOST_CONTAINER_LABEL
-            return {
-                "success": True,
-                "message": "Running in localhost mode — single-target",
-            }
-
+        """Select active container"""
         containers = await self.discover_containers()
+
         if any(c["name"] == container_name for c in containers):
             self.current_container = container_name
-            return {"success": True, "message": f"Container '{container_name}' selected"}
-        return {"success": False, "error": f"Container '{container_name}' not found"}
+            return {
+                "success": True,
+                "message": f"Container '{container_name}' selected"
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Container '{container_name}' not found"
+            }
 
     async def validate_container_status(self) -> Dict[str, Any]:
-        """Pre-flight check the execution target is reachable."""
-        backend = self._get_backend()
-        return await backend.validate_ready()
+        """Validate and potentially start the current container (with 30s cache)"""
+        if not self.current_container:
+            return {"success": False, "error": "No container selected"}
+
+        # Clean expired cache entries
+        self._clean_health_cache()
+
+        # Check cache first - avoid docker inspect overhead
+        current_time = time.time()
+        if self.current_container in self.container_health_cache:
+            cached_time, cached_status, is_running = self.container_health_cache[self.current_container]
+
+            # Cache hit - return cached result
+            if (current_time - cached_time) < self.health_cache_ttl:
+                if is_running:
+                    return {"success": True, "status": "running"}
+                else:
+                    return {"success": False, "error": f"Container in invalid state: {cached_status}"}
+
+        try:
+            # Cache miss/expired - perform docker inspect
+            result = await self._run_command([
+                "docker", "inspect", self.current_container, "--format", "{{.State.Status}}"
+            ])
+
+            if not result["success"]:
+                return {"success": False, "error": "Container not found", "details": result["stderr"]}
+
+            status = result["stdout"].strip()
+
+            if status == "running":
+                # Cache running state
+                self.container_health_cache[self.current_container] = (current_time, status, True)
+                return {"success": True, "status": "running"}
+            elif status in ["created", "exited"]:
+                # Try to start the container
+                start_result = await self._run_command([
+                    "docker", "start", self.current_container
+                ])
+
+                if start_result["success"]:
+                    # Cache newly started state
+                    self.container_health_cache[self.current_container] = (time.time(), "running", True)
+                    return {"success": True, "status": "started"}
+                else:
+                    # Cache failed state
+                    self.container_health_cache[self.current_container] = (current_time, status, False)
+                    return {
+                        "success": False,
+                        "error": "Failed to start container",
+                        "details": start_result["stderr"]
+                    }
+            else:
+                # Cache invalid state
+                self.container_health_cache[self.current_container] = (current_time, status, False)
+                return {"success": False, "error": f"Container in invalid state: {status}"}
+
+        except Exception as e:
+            return {"success": False, "error": f"Container validation failed: {str(e)}"}
 
     async def execute_container_command(
         self,
         command: str,
-        working_directory: Optional[str] = None,
+        working_directory: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Thin wrapper used by tests and a handful of legacy call sites."""
-        backend = self._get_backend()
-        result = await backend.exec_shell(command, cwd=working_directory)
+        """Execute a command in the current pentesting container
+
+        Args:
+            command: The command to execute
+            working_directory: Optional directory to cd into before executing the command
+        """
+        if not self.current_container:
+            return {
+                "success": False,
+                "error": "No container selected"
+            }
+
+        # Validate container before execution
+        validation = await self.validate_container_status()
+        if not validation["success"]:
+            return {
+                "success": False,
+                "container": self.current_container,
+                "command": command,
+                "error": f"Container validation failed: {validation['error']}",
+                "stdout": "",
+                "stderr": validation.get("details", validation["error"]),
+                "returncode": -1,
+                "execution_time": 0
+            }
+
+        start_time = time.time()
+
+        # If working_directory is specified, cd into it before executing command
+        # Disable RVM/chpwd hooks that cause noise in stderr
+        if working_directory:
+            wrapped_command = f"unset -f cd 2>/dev/null; source /root/.bashrc 2>/dev/null && cd {working_directory} 2>/dev/null && {command}"
+        else:
+            wrapped_command = f"unset -f cd 2>/dev/null; source /root/.bashrc 2>/dev/null && {command}"
+
+        result = await self._run_command([
+            "docker", "exec", self.current_container, "bash", "-c", wrapped_command
+        ])
+
+        execution_time = time.time() - start_time
+
+        # Filter out RVM/chpwd noise from stderr
+        stderr = result["stderr"]
+        if stderr:
+            # Remove RVM chpwd errors which are just noise
+            stderr_lines = [
+                line for line in stderr.split('\n')
+                if not ('chpwd' in line or 'rvm/scripts' in line or 'bash_zsh_support' in line)
+            ]
+            stderr = '\n'.join(stderr_lines).strip()
+
+        # Consider command successful if returncode is 0, regardless of stderr noise
+        is_success = result["returncode"] == 0
+
         return {
-            "success": result["success"],
-            "container": result.get("container", self.current_container),
+            "success": is_success,
+            "container": self.current_container,
             "command": command,
             "stdout": result["stdout"],
-            "stderr": result["stderr"],
+            "stderr": stderr,
             "returncode": result["returncode"],
-            "execution_time": result["execution_time"],
+            "execution_time": execution_time,
         }
 
-    # ========== Active target resolution ==========
-
     async def _resolve_active_container(self, db: AsyncSession) -> str:
-        """Pick the execution target for this request.
+        """Resolve which container to use for command execution.
 
-        Container mode:
-          1. PlatformSettings.container_name (UI override).
-          2. settings.DEFAULT_CONTAINER_NAME.
-          3. First running container matching CONTAINER_PREFIX_FILTER.
+        Priority:
+        1. PlatformSettings.container_name (set via Settings UI)
+        2. settings.DEFAULT_CONTAINER_NAME (config default)
+        3. Auto-discover any running container matching CONTAINER_PREFIX_FILTER
 
-        Localhost mode: always returns the synthetic "localhost" label.
+        Falls back to auto-discovery when the configured container is not running,
+        which covers the Exegol mode where aida-pentest is not started.
         """
-        if settings.DEPLOYMENT_MODE == "localhost":
-            return settings.LOCALHOST_CONTAINER_LABEL
-
         stmt = select(PlatformSettings).filter(PlatformSettings.key == "container_name")
         result = await db.execute(stmt)
         container_setting = result.scalar_one_or_none()
+
         configured = (
             container_setting.value
             if (container_setting and container_setting.value)
             else settings.DEFAULT_CONTAINER_NAME
         )
 
+        # Check if configured container is actually running
         containers = await self.discover_containers()
         running = [c for c in containers if c["status"] == "running"]
 
         if any(c["name"] == configured for c in running):
             return configured
 
+        # Configured container not running — auto-discover a running one
         if running:
             selected = running[0]["name"]
             logger.info(
                 "Configured container not running, auto-selecting running container",
                 configured=configured,
-                selected=selected,
+                selected=selected
             )
             return selected
 
+        # Nothing running — return configured and let validation produce a clear error
         return configured
 
-    # ========== Workspace provisioning ==========
+    async def _prepare_execution_context(self, assessment_id: int, db: AsyncSession,
+                                         timeout: Optional[int] = None):
+        """Resolve the (timeout, working_directory, assessment) for an
+        execute_and_log_* call.
 
-    async def _ensure_workspace_exists(
-        self,
-        assessment: Assessment,
-        db: AsyncSession,
-    ) -> Optional[str]:
-        """Make sure the assessment's workspace directory exists and return its path.
-
-        Creates the workspace on first encounter and repairs it if the user
-        rebuilt the container / switched deployment modes and the directory
-        went missing.
+        Shared by execute_and_log_command / _python / _http_request, which all
+        previously inlined this identical block: resolve the timeout from
+        platform settings (falling back to the config default), resolve the
+        active container, then load the assessment and create/repair its
+        workspace directory inside that container.
         """
-        if not assessment:
-            return None
-
-        if not assessment.workspace_path:
-            workspace_result = await self.create_workspace(
-                assessment_name=assessment.name, db=None
+        # Get timeout from database settings, or fall back to config default
+        if timeout is None:
+            stmt = select(PlatformSettings).filter(
+                PlatformSettings.key == "command_timeout"
             )
-            stmt = (
-                update(Assessment)
-                .where(Assessment.id == assessment.id)
-                .values(
-                    workspace_path=workspace_result["workspace_path"],
-                    container_name=workspace_result["container_name"],
-                )
-            )
-            await db.execute(stmt)
-            await db.commit()
-            await db.refresh(assessment)
-            assessment.workspace_path = workspace_result["workspace_path"]
-            assessment.container_name = workspace_result["container_name"]
-            return assessment.workspace_path
-
-        # Workspace exists in DB — verify it's actually present on the
-        # execution target. This protects against mode switches and
-        # container rebuilds.
-        backend = self._get_backend()
-        subdirs = ["recon", "exploits", "loot", "notes", "scripts", "context"]
-        await backend.ensure_workspace(assessment.workspace_path, subdirs)
-        return assessment.workspace_path
-
-    # ========== Command execution + logging ==========
-
-    async def _resolve_timeout(
-        self, db: AsyncSession, explicit: Optional[int]
-    ) -> int:
-        if explicit is not None:
-            return explicit
-        stmt = select(PlatformSettings).filter(
-            PlatformSettings.key == "command_timeout"
-        )
-        result = await db.execute(stmt)
-        timeout_setting = result.scalar_one_or_none()
-        if timeout_setting:
+            result = await db.execute(stmt)
+            timeout_setting = result.scalar_one_or_none()
             try:
-                return int(timeout_setting.value)
+                timeout = int(timeout_setting.value) if timeout_setting else settings.COMMAND_TIMEOUT
             except ValueError:
-                return settings.COMMAND_TIMEOUT
-        return settings.COMMAND_TIMEOUT
+                timeout = settings.COMMAND_TIMEOUT
 
-    async def _broadcast_result(
-        self,
-        command_log: CommandHistory,
-        assessment: Optional[Assessment],
-        assessment_id: int,
-    ) -> None:
-        from schemas.command import CommandResponse
+        self.current_container = await self._resolve_active_container(db)
 
-        command_dict = CommandResponse.model_validate(command_log).model_dump(mode="json")
-        command_dict["assessment_name"] = assessment.name if assessment else None
-        if command_log.success:
-            await manager.broadcast(
-                event_command_completed(assessment_id, command_dict),
-                assessment_id=assessment_id,
-            )
-        else:
-            await manager.broadcast(
-                event_command_failed(assessment_id, command_dict),
-                assessment_id=assessment_id,
-            )
+        # Get workspace_path from assessment to execute commands in the right directory
+        stmt = select(Assessment).filter(Assessment.id == assessment_id)
+        result = await db.execute(stmt)
+        assessment = result.scalar_one_or_none()
 
-    async def _broadcast_timeout(
-        self, command_log: CommandHistory, assessment_id: int
-    ) -> None:
-        from schemas.command import CommandResponse
+        working_directory = None
+        if assessment:
+            # If workspace_path doesn't exist in DB, create it
+            if not assessment.workspace_path:
+                # Create workspace without db parameter to avoid session mixing
+                workspace_result = await self.create_workspace(
+                    assessment_name=assessment.name,
+                    db=None  # Don't pass DB to avoid sync/async mixing
+                )
+                # Update workspace_path and container_name using async session only
+                stmt = (
+                    update(Assessment)
+                    .where(Assessment.id == assessment_id)
+                    .values(
+                        workspace_path=workspace_result["workspace_path"],
+                        container_name=workspace_result["container_name"]
+                    )
+                )
+                await db.execute(stmt)
+                await db.commit()
+                # Refresh the assessment object with new values
+                await db.refresh(assessment)
+                assessment.workspace_path = workspace_result["workspace_path"]
+            else:
+                # Workspace path exists in DB, but ensure it exists in current container
+                # This handles cases where container_name setting changed after workspace creation
+                workspace_check = await self._run_command([
+                    "docker", "exec", self.current_container, "test", "-d", assessment.workspace_path
+                ])
 
-        command_dict = CommandResponse.model_validate(command_log).model_dump(mode="json")
-        await manager.broadcast(
-            create_event(
-                EventType.COMMAND_TIMEOUT,
-                {"command": command_dict},
-                assessment_id=assessment_id,
-            ),
-            assessment_id=assessment_id,
-        )
+                if workspace_check["returncode"] != 0:
+                    # Workspace doesn't exist in current container, create it
+                    logger.warning(
+                        "Workspace directory missing in container, creating it",
+                        workspace_path=assessment.workspace_path,
+                        container=self.current_container,
+                        assessment_id=assessment_id
+                    )
+                    subdirs = ['recon', 'exploits', 'loot', 'notes', 'scripts', 'context']
+                    subdir_paths = [f"{assessment.workspace_path}/{subdir}" for subdir in subdirs]
+                    all_paths = [assessment.workspace_path] + subdir_paths
+                    mkdir_command = f"mkdir -p {' '.join(shlex.quote(p) for p in all_paths)}"
+
+                    await self._run_command([
+                        "docker", "exec", self.current_container, "bash", "-c", mkdir_command
+                    ])
+
+            working_directory = assessment.workspace_path
+
+        return timeout, working_directory, assessment
 
     async def execute_and_log_command(
         self,
@@ -364,36 +418,42 @@ class ContainerService:
         phase: Optional[str],
         db: AsyncSession,
         timeout: Optional[int] = None,
+        display_command: Optional[str] = None,
     ) -> CommandHistory:
-        """Execute a shell command, log it to CommandHistory, broadcast result."""
-        timeout = await self._resolve_timeout(db, timeout)
+        """Execute command with timeout and log it to database (async optimized).
 
-        self.current_container = await self._resolve_active_container(db)
-        backend = self._get_backend()
+        `command` is what actually runs inside the container. `display_command`,
+        when given, is what gets STORED in history and broadcast over WebSocket —
+        used to keep substituted secrets (real credentials) out of the persisted
+        log while still executing the real command.
+        """
+        timeout, working_directory, assessment = await self._prepare_execution_context(
+            assessment_id, db, timeout
+        )
 
-        stmt = select(Assessment).filter(Assessment.id == assessment_id)
-        result = await db.execute(stmt)
-        assessment = result.scalar_one_or_none()
-        working_directory = await self._ensure_workspace_exists(assessment, db)
-
+        # Create command log entry BEFORE execution (status: running)
         command_log = CommandHistory(
             assessment_id=assessment_id,
             container_name=self.current_container,
-            command=command,
+            command=display_command if display_command is not None else command,
             phase=phase,
-            status="running",
+            status="running"
         )
         db.add(command_log)
         await db.commit()
         await db.refresh(command_log)
 
         try:
+            # Execute command with timeout and in the assessment's workspace
             result = await asyncio.wait_for(
-                backend.exec_shell(
-                    command, cwd=working_directory, timeout=float(timeout)
+                self.execute_container_command(
+                    command=command,
+                    working_directory=working_directory
                 ),
-                timeout=timeout + 5,
+                timeout=timeout
             )
+
+            # Success - update command log (sanitize output to remove null bytes)
             command_log.stdout = self._sanitize_output(result.get("stdout") or "")
             command_log.stderr = self._sanitize_output(result.get("stderr") or "")
             command_log.returncode = result.get("returncode")
@@ -403,18 +463,48 @@ class ContainerService:
 
             await db.commit()
             await db.refresh(command_log)
-            await self._broadcast_result(command_log, assessment, assessment_id)
+
+            # Broadcast WebSocket event
+            from schemas.command import CommandResponse
+            command_dict = CommandResponse.model_validate(command_log).model_dump(mode='json')
+            command_dict['assessment_name'] = assessment.name if assessment else None
+
+            if command_log.success:
+                await manager.broadcast(
+                    event_command_completed(assessment_id, command_dict),
+                    assessment_id=assessment_id
+                )
+            else:
+                await manager.broadcast(
+                    event_command_failed(assessment_id, command_dict),
+                    assessment_id=assessment_id
+                )
+
             return command_log
 
         except asyncio.TimeoutError:
+            # TIMEOUT! Mark as timeout status
             command_log.status = "timeout"
             command_log.timeout_at = datetime.utcnow()
             command_log.stderr = f"Command exceeded {timeout}s timeout limit"
             command_log.success = False
             command_log.execution_time = timeout
+
             await db.commit()
             await db.refresh(command_log)
-            await self._broadcast_timeout(command_log, assessment_id)
+
+            # Broadcast WebSocket event for timeout
+            from schemas.command import CommandResponse
+            command_dict = CommandResponse.model_validate(command_log).model_dump(mode='json')
+            await manager.broadcast(
+                create_event(
+                    EventType.COMMAND_TIMEOUT,
+                    {"command": command_dict},
+                    assessment_id=assessment_id
+                ),
+                assessment_id=assessment_id
+            )
+
             return command_log
 
         except Exception as e:
@@ -437,19 +527,90 @@ class ContainerService:
         self,
         code: str,
         working_directory: Optional[str] = None,
-        timeout: float = 300.0,
+        timeout: float = 300.0
     ) -> Dict[str, Any]:
-        """Direct-exec Python helper (used by tests and a few legacy paths)."""
-        backend = self._get_backend()
-        result = await backend.exec_python(code, cwd=working_directory, timeout=timeout)
-        return {
-            "success": result["success"],
-            "stdout": self._sanitize_output(result["stdout"]),
-            "stderr": self._sanitize_output(result["stderr"]),
-            "returncode": result["returncode"],
-            "execution_time": result["execution_time"],
-            "container": result.get("container", self.current_container),
-        }
+        """Execute Python code via stdin to avoid heredoc escaping issues.
+
+        Uses `docker exec -i python3 -` and pipes the code directly via stdin.
+        No temp files, no shell escaping required.
+
+        Args:
+            code: Python source code to execute
+            working_directory: Optional working directory inside the container
+            timeout: Execution timeout in seconds
+
+        Returns:
+            Dict with success, stdout, stderr, returncode, execution_time, container
+        """
+        if not self.current_container:
+            return {
+                "success": False,
+                "error": "No container selected",
+                "stdout": "",
+                "stderr": "No container selected",
+                "returncode": -1,
+                "execution_time": 0,
+            }
+
+        start_time = time.time()
+
+        docker_cmd = ["docker", "exec", "-i"]
+        if working_directory:
+            docker_cmd += ["-w", working_directory]
+        docker_cmd += [
+            "-e", "PYTHONUNBUFFERED=1",
+            self.current_container,
+            "python3", "-"
+        ]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *docker_cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(input=code.encode('utf-8')),
+                timeout=timeout
+            )
+
+            execution_time = time.time() - start_time
+
+            return {
+                "success": process.returncode == 0,
+                "stdout": self._sanitize_output(stdout_bytes.decode('utf-8', errors='replace')),
+                "stderr": self._sanitize_output(stderr_bytes.decode('utf-8', errors='replace')),
+                "returncode": process.returncode,
+                "execution_time": execution_time,
+                "container": self.current_container,
+            }
+
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+                await process.communicate()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": f"Python execution timed out after {timeout}s",
+                "returncode": -1,
+                "execution_time": timeout,
+                "container": self.current_container,
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": str(e),
+                "returncode": -1,
+                "execution_time": time.time() - start_time,
+                "container": self.current_container,
+            }
 
     async def execute_and_log_python(
         self,
@@ -457,23 +618,28 @@ class ContainerService:
         code: str,
         phase: Optional[str],
         db: AsyncSession,
-        timeout: Optional[int] = None,
+        timeout: Optional[int] = None
     ) -> "CommandHistory":
-        """Execute Python code via stdin and log it to CommandHistory.
+        """Execute Python code via stdin and log it to the database.
 
-        Mirrors execute_and_log_command() but calls backend.exec_python() and
+        Mirrors execute_and_log_command() but uses execute_python_stdin() and
         stores command_type='python' + source_code=code in CommandHistory.
+
+        Args:
+            assessment_id: Assessment to associate the command with
+            code: Python source code to execute
+            phase: Current assessment phase (for logging)
+            db: Async database session
+            timeout: Optional execution timeout override
+
+        Returns:
+            CommandHistory instance with execution results
         """
-        timeout = await self._resolve_timeout(db, timeout)
+        timeout, working_directory, assessment = await self._prepare_execution_context(
+            assessment_id, db, timeout
+        )
 
-        self.current_container = await self._resolve_active_container(db)
-        backend = self._get_backend()
-
-        stmt = select(Assessment).filter(Assessment.id == assessment_id)
-        result = await db.execute(stmt)
-        assessment = result.scalar_one_or_none()
-        working_directory = await self._ensure_workspace_exists(assessment, db)
-
+        # --- Create log entry (status: running) ---
         command_log = CommandHistory(
             assessment_id=assessment_id,
             container_name=self.current_container,
@@ -489,11 +655,14 @@ class ContainerService:
 
         try:
             result = await asyncio.wait_for(
-                backend.exec_python(
-                    code, cwd=working_directory, timeout=float(timeout)
+                self.execute_python_stdin(
+                    code=code,
+                    working_directory=working_directory,
+                    timeout=timeout
                 ),
-                timeout=timeout + 5,
+                timeout=timeout + 5  # small buffer around inner timeout
             )
+
             command_log.stdout = self._sanitize_output(result.get("stdout") or "")
             command_log.stderr = self._sanitize_output(result.get("stderr") or "")
             command_log.returncode = result.get("returncode")
@@ -503,7 +672,22 @@ class ContainerService:
 
             await db.commit()
             await db.refresh(command_log)
-            await self._broadcast_result(command_log, assessment, assessment_id)
+
+            # WebSocket broadcast
+            from schemas.command import CommandResponse
+            command_dict = CommandResponse.model_validate(command_log).model_dump(mode='json')
+            command_dict['assessment_name'] = assessment.name if assessment else None
+            if command_log.success:
+                await manager.broadcast(
+                    event_command_completed(assessment_id, command_dict),
+                    assessment_id=assessment_id
+                )
+            else:
+                await manager.broadcast(
+                    event_command_failed(assessment_id, command_dict),
+                    assessment_id=assessment_id
+                )
+
             return command_log
 
         except asyncio.TimeoutError:
@@ -512,12 +696,25 @@ class ContainerService:
             command_log.stderr = f"Python execution exceeded {timeout}s timeout limit"
             command_log.success = False
             command_log.execution_time = timeout
+
             await db.commit()
             await db.refresh(command_log)
-            await self._broadcast_timeout(command_log, assessment_id)
+
+            from schemas.command import CommandResponse
+            command_dict = CommandResponse.model_validate(command_log).model_dump(mode='json')
+            await manager.broadcast(
+                create_event(
+                    EventType.COMMAND_TIMEOUT,
+                    {"command": command_dict},
+                    assessment_id=assessment_id
+                ),
+                assessment_id=assessment_id
+            )
+
             return command_log
 
         except Exception as e:
+            # Don't leave the row stuck in "running" on a non-timeout failure.
             if command_log.status == "running":
                 command_log.status = "failed"
                 command_log.success = False
@@ -529,15 +726,17 @@ class ContainerService:
                     await db.rollback()
             return command_log
 
-    # ========== HTTP-request helper (mode-agnostic) ==========
-
     def _generate_http_python_script(self, params) -> str:
         """Generate a Python requests script from HttpRequestRequest params.
 
-        The script is piped via stdin to `python3 -` on whatever backend
-        we're using. Output format is human-readable: status line, headers,
-        optional cookies, body. Identical across container and localhost
-        modes — the script doesn't know or care where it runs.
+        The script is designed to be piped via stdin to `python3 -` inside Exegol.
+        Produces human-readable output: status line, headers, optional cookies, body.
+
+        Args:
+            params: HttpRequestRequest instance (already credential-substituted)
+
+        Returns:
+            Python source code as a string (no shell escaping needed)
         """
         import json as _json
 
@@ -550,16 +749,19 @@ class ContainerService:
         follow_redirects = params.follow_redirects
         verify_ssl = params.verify_ssl
 
+        # Build auth tuple representation
         if params.auth and len(params.auth) >= 2:
             auth_repr = repr(tuple(params.auth[:2]))
         else:
             auth_repr = "None"
 
+        # Build proxy dict from single string
         if params.proxy:
             proxy_repr = repr({"http": params.proxy, "https": params.proxy})
         else:
             proxy_repr = "None"
 
+        # Build body line: json_body takes priority over data
         if params.json_body is not None:
             body_line = f"    json={_json.dumps(params.json_body)!r},"
         elif params.data is not None:
@@ -589,6 +791,7 @@ try:
     )
     _ms = int((time.time() - _start) * 1000)
 
+    # Try to parse JSON response body
     try:
         _body = _json.dumps(_resp.json(), indent=2, ensure_ascii=False)
         _is_json = True
@@ -637,28 +840,34 @@ except Exception as _e:
         assessment_id: int,
         params,
         db: AsyncSession,
-        timeout: Optional[int] = None,
+        timeout: Optional[int] = None
     ) -> "CommandHistory":
-        """Execute an HTTP request via the generated Python script.
+        """Execute an HTTP request via Python requests inside Exegol and log it.
 
         Generates a Python script from the structured HttpRequestRequest params,
-        then hands it to backend.exec_python() (docker exec or host-agent). Stores
-        command_type='http' in CommandHistory with a human-readable command field
-        ('HTTP POST http://target') and the generated Python script in source_code.
+        then pipes it via stdin to `python3 -` inside the container (same mechanism
+        as execute_and_log_python). Stores command_type='http' in CommandHistory
+        with a human-readable command field ('HTTP POST http://target') and the
+        generated Python script in source_code.
+
+        Args:
+            assessment_id: Assessment to associate with
+            params: HttpRequestRequest (already credential-substituted)
+            db: Async database session
+            timeout: Optional override (defaults to DB command_timeout setting)
+
+        Returns:
+            CommandHistory instance with execution results
         """
-        timeout = await self._resolve_timeout(db, timeout)
+        timeout, working_directory, assessment = await self._prepare_execution_context(
+            assessment_id, db, timeout
+        )
 
-        self.current_container = await self._resolve_active_container(db)
-        backend = self._get_backend()
-
-        stmt = select(Assessment).filter(Assessment.id == assessment_id)
-        result = await db.execute(stmt)
-        assessment = result.scalar_one_or_none()
-        working_directory = await self._ensure_workspace_exists(assessment, db)
-
+        # --- Generate Python script ---
         code = self._generate_http_python_script(params)
         display_command = f"HTTP {params.method.upper()} {params.url}"
 
+        # --- Create log entry (status: running) ---
         command_log = CommandHistory(
             assessment_id=assessment_id,
             container_name=self.current_container,
@@ -674,11 +883,14 @@ except Exception as _e:
 
         try:
             result = await asyncio.wait_for(
-                backend.exec_python(
-                    code, cwd=working_directory, timeout=float(timeout)
+                self.execute_python_stdin(
+                    code=code,
+                    working_directory=working_directory,
+                    timeout=timeout
                 ),
-                timeout=timeout + 5,
+                timeout=timeout + 5
             )
+
             command_log.stdout = self._sanitize_output(result.get("stdout") or "")
             command_log.stderr = self._sanitize_output(result.get("stderr") or "")
             command_log.returncode = result.get("returncode")
@@ -688,7 +900,22 @@ except Exception as _e:
 
             await db.commit()
             await db.refresh(command_log)
-            await self._broadcast_result(command_log, assessment, assessment_id)
+
+            # WebSocket broadcast
+            from schemas.command import CommandResponse
+            command_dict = CommandResponse.model_validate(command_log).model_dump(mode='json')
+            command_dict['assessment_name'] = assessment.name if assessment else None
+            if command_log.success:
+                await manager.broadcast(
+                    event_command_completed(assessment_id, command_dict),
+                    assessment_id=assessment_id
+                )
+            else:
+                await manager.broadcast(
+                    event_command_failed(assessment_id, command_dict),
+                    assessment_id=assessment_id
+                )
+
             return command_log
 
         except asyncio.TimeoutError:
@@ -697,12 +924,25 @@ except Exception as _e:
             command_log.stderr = f"HTTP request exceeded {timeout}s timeout limit"
             command_log.success = False
             command_log.execution_time = timeout
+
             await db.commit()
             await db.refresh(command_log)
-            await self._broadcast_timeout(command_log, assessment_id)
+
+            from schemas.command import CommandResponse
+            command_dict = CommandResponse.model_validate(command_log).model_dump(mode='json')
+            await manager.broadcast(
+                create_event(
+                    EventType.COMMAND_TIMEOUT,
+                    {"command": command_dict},
+                    assessment_id=assessment_id
+                ),
+                assessment_id=assessment_id
+            )
+
             return command_log
 
         except Exception as e:
+            # Don't leave the row stuck in "running" on a non-timeout failure.
             if command_log.status == "running":
                 command_log.status = "failed"
                 command_log.success = False
@@ -714,69 +954,64 @@ except Exception as _e:
                     await db.rollback()
             return command_log
 
-    # ========== Workspace creation ==========
-
-    async def create_workspace(
-        self, assessment_name: str, db: Session = None
-    ) -> Dict[str, str]:
-        """Create the workspace folder for an assessment.
+    async def create_workspace(self, assessment_name: str, db: Session = None) -> Dict[str, str]:
+        """Create workspace folder in pentesting container with subdirectories
 
         Creates the directory structure:
-            {base}/{assessment_name}/
-            ├── recon/
-            ├── exploits/
-            ├── loot/
-            ├── notes/
-            ├── scripts/
-            └── context/
+        /workspace/{assessment_name}/
+        ├── recon/
+        ├── exploits/
+        ├── loot/
+        ├── notes/
+        └── scripts/
 
-        In container mode the base is `/workspace` inside the pentest
-        container (bind-mounted to `~/.aida/workspaces` on the host).
-        In localhost mode the base is the same `/workspace` path but the
-        host-agent resolves it against the real host filesystem — start.sh
-        creates the directory if it doesn't exist and wires the mount.
+        Args:
+            assessment_name: Name of the assessment
+            db: Optional database session to load container_name from PlatformSettings
+
+        Returns:
+            Dict with workspace_path and container_name
         """
-        if settings.DEPLOYMENT_MODE != "localhost" and db:
-            container_setting = (
-                db.query(PlatformSettings)
-                .filter(PlatformSettings.key == "container_name")
-                .first()
-            )
+        # Load container name from database if session provided
+        if db:
+            container_setting = db.query(PlatformSettings).filter(
+                PlatformSettings.key == "container_name"
+            ).first()
+
             if container_setting and container_setting.value:
                 self.current_container = container_setting.value
             else:
                 self.current_container = settings.DEFAULT_CONTAINER_NAME
 
-        safe_name = assessment_name.replace(" ", "_")
-        safe_name = "".join(c for c in safe_name if c.isalnum() or c in ("_", "-"))
+        # Sanitize assessment name for filesystem
+        safe_name = assessment_name.replace(' ', '_')
+        safe_name = ''.join(c for c in safe_name if c.isalnum() or c in ('_', '-'))
 
-        base = (
-            settings.LOCALHOST_WORKSPACE_BASE
-            if settings.DEPLOYMENT_MODE == "localhost"
-            else settings.CONTAINER_WORKSPACE_BASE
-        )
-        workspace_path = f"{base}/{safe_name}"
+        workspace_path = f"{settings.CONTAINER_WORKSPACE_BASE}/{safe_name}"
 
-        backend = self._get_backend()
-        subdirs = ["recon", "exploits", "loot", "notes", "scripts", "context"]
-        await backend.ensure_workspace(workspace_path, subdirs)
+        # Create main directory and subdirectories in one command
+        subdirs = ['recon', 'exploits', 'loot', 'notes', 'scripts', 'context']
+        subdir_paths = [f"{workspace_path}/{subdir}" for subdir in subdirs]
+        all_paths = [workspace_path] + subdir_paths
 
-        # Seed methodology.md — the agent updates this at the end of the
-        # engagement. Written via a quoted heredoc so the content (which
-        # contains an apostrophe in "AI's") doesn't require any escaping —
-        # a plain `printf '...'` wrapper produced an unbalanced-quote error.
+        mkdir_command = f"mkdir -p {' '.join(shlex.quote(p) for p in all_paths)}"
+
+        # Create directories in container
+        await self.execute_container_command(mkdir_command)
+
+        # Create methodology.md template
         methodology_path = shlex.quote(f"{workspace_path}/methodology.md")
-        methodology_body = (
-            "# Methodology Report\n"
-            "\n"
-            "> Generated by AIDA AI at the end of the engagement.\n"
-            "> This document explains the AI's reasoning, approach, tools used, "
-            "and full engagement summary.\n"
+        methodology_content = (
+            "# Methodology Report\\n\\n"
+            "> Generated by AIDA AI at the end of the engagement.\\n"
+            "> This document explains the AI\\'s reasoning, approach, tools used, and full engagement summary.\\n"
         )
-        heredoc = f"cat > {methodology_path} <<'AIDA_METHODOLOGY_EOF'\n{methodology_body}AIDA_METHODOLOGY_EOF\n"
-        await backend.exec_shell(heredoc)
+        await self.execute_container_command(f"printf '{methodology_content}' > {methodology_path}")
+
+        # Store current container name for return
+        current_container = self.current_container
 
         return {
             "workspace_path": workspace_path,
-            "container_name": self.current_container,
+            "container_name": current_container
         }

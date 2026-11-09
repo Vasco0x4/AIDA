@@ -50,10 +50,6 @@ class FfufParser(BaseParser):
             # Get results array
             results = data.get('results', [])
             
-            # Get config for context
-            config = data.get('config', {})
-            base_url = config.get('url', '')
-            
             # Track seen URLs to avoid duplicates within same file
             seen_urls = set()
             

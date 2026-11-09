@@ -1,7 +1,7 @@
 """
 Tool Usage Analyzer - Extract and categorize tools from commands
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 # Tool categorization mapping

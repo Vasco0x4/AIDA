@@ -1123,3 +1123,33 @@ tr:nth-child(even) td { background: #fafbfc; }
 .page-break { page-break-before: always; }
 a { color: var(--primary); text-decoration: none; }
 p { margin: 4px 0; }
+
+/* ===================== Kill Chain / Attack Narrative ===================== */
+.kc-phase { margin: 0 0 18px 0; }
+.kc-phase-title {
+  font-size: 13px; color: #0f172a; margin: 0 0 8px 0;
+  padding-bottom: 4px; border-bottom: 1px solid #e2e8f0;
+}
+.kc-events { padding-left: 6px; }
+.kc-event { display: flex; gap: 10px; margin: 0 0 10px 0; break-inside: avoid; }
+.kc-dot {
+  flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%;
+  background: #64748b; margin-top: 4px;
+}
+.kc-body { flex: 1 1 auto; }
+.kc-event-title { font-size: 11.5px; font-weight: 600; color: #1e293b; }
+.kc-sev {
+  display: inline-block; font-size: 8.5px; font-weight: 700; color: #fff;
+  padding: 1px 5px; border-radius: 3px; margin-left: 6px; vertical-align: middle;
+}
+.kc-event-desc { font-size: 10.5px; color: #475569; margin-top: 2px; }
+.kc-event-time { font-size: 9px; color: #94a3b8; margin-top: 2px; font-family: monospace; }
+
+/* ===================== Evidence screenshots ===================== */
+figure.evidence { margin: 8px 0; break-inside: avoid; }
+figure.evidence img {
+  max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px; display: block;
+}
+figure.evidence figcaption {
+  font-size: 9.5px; color: #64748b; margin-top: 4px; font-style: italic;
+}
