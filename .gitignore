@@ -60,10 +60,6 @@ stop-legacy.sh
 /.aida/container-preference
 /.aida/session
 /.aida/api-key
-/.aida/deployment-mode
-
-# CLI venv (top-level) — created by start.sh for MCP/host-agent
-/.venv/
 
 # Docker
 docker-compose.override.yml
@@ -77,3 +73,23 @@ switch-db.sh
 
 # TLS — Caddyfile generated dynamically by start.sh in --lan / --domain mode
 /.aida/Caddyfile
+
+# Local runtime state & generated evidence
+.aida/
+evidence/
+backend/.env.docker
+
+# Test/lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# k8s secret manifests hold real credentials — never commit them
+k8s/secret.yaml
+.aida/
+._*

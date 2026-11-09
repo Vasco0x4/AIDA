@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aida-config
+data:
+  # Comma-separated browser origins allowed by the backend CORS filter.
+  # With the default Ingress host this is https://aida.example.com.
+  BACKEND_CORS_ORIGINS: "https://aida.example.com"
+  ENVIRONMENT: "production"
+  # Executor container inside the DinD sidecar (see backend.yaml).
+  DEFAULT_CONTAINER_NAME: "aida-pentest"
+  PENTEST_IMAGE: "vasco0x4/aida-pentest:latest"

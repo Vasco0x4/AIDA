@@ -1,0 +1,20 @@
+# Prometheus scrape config for the AIDA prod stack (monitoring profile).
+#
+#   docker compose -f docker-compose.prod.yml --profile monitoring up -d
+#
+# The backend exposes /metrics (unauthenticated, like /health — keep both
+# behind the edge in any public deployment).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: aida-backend
+    # The backend container on the compose network.
+    static_configs:
+      - targets: ["backend:8000"]
+    metrics_path: /metrics
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,8 +1,22 @@
+# =============================================================================
+# AIDA — ISOLATED DEV STACK
+# Parallel, self-contained development instance. Runs alongside the main
+# (production) AIDA stack without conflicts: distinct container names, ports,
+# volume, and networks. Nothing here touches the aida_* main stack.
+#
+#   Postgres : 127.0.0.1:5433   (main uses 5432)
+#   Backend  : 127.0.0.1:8001   (main uses 8000)
+#   Frontend : 127.0.0.1:5174   (main uses 5173)
+#
+# Bring up:  docker compose -f docker-compose.yml up -d
+# =============================================================================
+name: aida-dev
+
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (dev — separate volume, starts empty)
   postgres:
     image: postgres:16-alpine
-    container_name: aida_postgres
+    container_name: aida_dev_postgres
     env_file:
       - backend/.env
     environment:
@@ -10,15 +24,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aida}
       POSTGRES_DB: ${POSTGRES_DB:-aida_assessments}
     ports:
-      # Bind to localhost only — the database must never be reachable from
-      # the LAN. The backend talks to postgres over the internal docker
-      # network, so this mapping only exists for host-side dev tools (psql,
-      # pgAdmin, DBeaver). Remove the line entirely to lock it down further.
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT_DEV:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - aida-network
+      - aida-dev-network
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aida} -d ${POSTGRES_DB:-aida_assessments}" ]
       interval: 5s
@@ -26,42 +36,39 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # FastAPI Backend
+  # FastAPI Backend (dev — hot reload)
   backend:
     image: vasco0x4/aida-backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: aida_backend
+      args:
+        # pytest + ruff baked into the dev image (scripts/test.sh runs inside it)
+        INSTALL_DEV: "true"
+    container_name: aida_dev_backend
     env_file:
       - backend/.env
     environment:
-      # DB_HOST is set by switch-db.sh in root .env (default: postgres)
       POSTGRES_HOST: ${DB_HOST:-postgres}
       POSTGRES_DB: ${DB_NAME:-aida_assessments}
-      # Set to 'development' by start.sh --dev for hot reload
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      # Injected by start.sh --lan (dev mode) — includes LAN IP + localhost on port 5173
-      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
-      # Route docker CLI through the socket proxy instead of raw daemon socket.
-      # The proxy only allows inspect/exec/start — no run/create/volumes.
+      ENVIRONMENT: development
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
       DOCKER_HOST: tcp://docker-proxy:2375
     ports:
-      # Bind host is configurable via BACKEND_BIND_HOST. Default 127.0.0.1
-      # keeps the API off the LAN. Set to 0.0.0.0 to expose the HTTP MCP
-      # transport to LAN clients (still gated by API-key auth + network
-      # policy in platform_settings).
-      - "${BACKEND_BIND_HOST:-127.0.0.1}:8000:8000"
+      - "${BACKEND_BIND_HOST:-127.0.0.1}:8001:8000"
     volumes:
-      # Mount source code for hot reload (exclude venv to avoid conflicts)
-      # :z flag enables SELinux compatibility (RHEL/Fedora)
       - ./backend:/app:z
       - /app/venv
-      # Docker socket removed — backend talks to docker-proxy instead.
-      # Mount logs directory with SELinux flag
       - ./backend/logs:/app/logs:z
+      # Offensive-security skill base (read-only) — loaded into the knowledge
+      # layer and read on demand by the agent's read_skill tool.
+      - ./skills:/skills:ro
+      # Evidence mirror: PoC videos / screenshots / submission reports are also
+      # written to disk here (host: ./evidence) as convenient files, in addition
+      # to the DB copy. Container path /evidence == host ~/AIDA-dev/evidence.
+      - ./evidence:/evidence:z
     networks:
-      - aida-network
+      - aida-dev-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,29 +82,29 @@ services:
       retries: 3
       start_period: 40s
 
-  # React Frontend
+  # React Frontend (dev) — Vite dev server with HOT RELOAD, built from the
+  # repo's dev Dockerfile (node + `npm run dev`). Source is bind-mounted so UI
+  # edits reflect live. The browser talks to the Vite server's /api proxy
+  # (VITE_API_URL=/api), which forwards to the in-container backend service —
+  # works from localhost and from LAN IPs alike, no CORS involved. UI at
+  # http://localhost:5174.
   frontend:
-    image: vasco0x4/aida-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: aida_frontend
+    image: aida-dev-frontend:dev
+    container_name: aida_dev_frontend
     environment:
-      # In dev+LAN mode start.sh exports VITE_API_URL=http://[IP]:8000/api,
-      # which takes priority over the localhost default (Vite gives process env
-      # vars higher priority than .env files).
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
+      VITE_API_URL: ${VITE_API_URL:-/api}
+      VITE_MCP_PORT: ${VITE_MCP_PORT:-8001}
+      VITE_MCP_URL: ${VITE_MCP_URL:-}
     ports:
-      # Bind host is configurable via FRONTEND_BIND_HOST. Default 127.0.0.1
-      # keeps Vite off the LAN. Set to 0.0.0.0 with --dev --lan.
-      - "${FRONTEND_BIND_HOST:-127.0.0.1}:5173:5173"
+      - "${FRONTEND_BIND_HOST:-127.0.0.1}:5174:5173"
     volumes:
-      # Mount source code for hot reload (exclude node_modules to avoid conflicts)
-      # :z flag enables SELinux compatibility (RHEL/Fedora)
       - ./frontend:/app:z
-      - /app/node_modules
+      - aida_dev_frontend_modules:/app/node_modules
     networks:
-      - aida-network
+      - aida-dev-network
     depends_on:
       - backend
     restart: unless-stopped
@@ -105,26 +112,18 @@ services:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5173" ]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 40s
+      retries: 5
+      start_period: 60s
 
-  # AIDA Pentest Container
-  # Lightweight execution environment for AI-driven assessments.
-  # The backend connects to this container via Docker socket (docker exec).
-  # Docker Socket Proxy — exposes a filtered Docker API to the backend.
-  # Only container inspection + exec are allowed; create/run/volumes/images
-  # are blocked, so a compromised backend cannot escape to the host.
+  # Docker Socket Proxy — filtered Docker API for the dev backend
   docker-proxy:
     image: tecnativa/docker-socket-proxy:latest
-    container_name: aida_docker_proxy
+    container_name: aida_dev_docker_proxy
     restart: unless-stopped
     environment:
-      # Read-only by default; POST is needed for exec & start.
       POST: 1
-      # Allowed API sections
-      CONTAINERS: 1   # inspect, list, start, stop
-      EXEC: 1         # docker exec
-      # Everything else stays 0 (denied)
+      CONTAINERS: 1
+      EXEC: 1
       IMAGES: 0
       VOLUMES: 0
       NETWORKS: 0
@@ -144,34 +143,33 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - aida-network
-    # This container only needs to be reachable by the backend, never exposed.
+      - aida-dev-network
 
+  # AIDA Pentest execution container (dev — separate workspaces dir)
   aida-pentest:
     image: vasco0x4/aida-pentest:latest
     build:
       context: ./pentest
       dockerfile: Dockerfile
-    container_name: aida-pentest
+    container_name: aida-dev-pentest
     tty: true
     stdin_open: true
     volumes:
-      # Workspace bind mount — same /workspace path as Exegol.
-      # workspace_service.py discovers this path via docker inspect, so the
-      # host path resolution in aida.py continues to work without changes.
-      - ${HOME}/.aida/workspaces:/workspace
+      - ${HOME}/.aida-dev/workspaces:/workspace
     networks:
-      - pentest-network
+      - aida-dev-pentest-network
     restart: unless-stopped
 
 networks:
-  aida-network:
-    name: aida-network
+  aida-dev-network:
+    name: aida-dev-network
     driver: bridge
-  pentest-network:
-    name: aida-pentest-network
+  aida-dev-pentest-network:
+    name: aida-dev-pentest-network
     driver: bridge
 
 volumes:
   postgres_data:
-    name: aida_postgres_data
+    name: aida_dev_postgres_data
+  aida_dev_frontend_modules:
+    name: aida_dev_frontend_modules

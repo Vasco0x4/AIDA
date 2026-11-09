@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "feat/**"]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aida
+          POSTGRES_PASSWORD: aida
+          POSTGRES_DB: aida_assessments
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aida"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://aida:aida@localhost:5432/aida_test
+      SECRET_KEY: ci-secret-key-for-tests-only-not-real
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: aida
+      POSTGRES_PASSWORD: aida
+      POSTGRES_DB: aida_assessments
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      # WeasyPrint (PDF reports) loads pango at import; tests don't import it,
+      # but its wheels still install cleanly — libs kept as cheap insurance.
+      - name: Install system libs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangocairo-1.0-0
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (pytest)
+        run: pytest -q
+
+  frontend:
+    name: Frontend (tests + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npx vitest run --maxWorkers=2 && node --test src/services/nvdService.test.js
+
+      - name: Build
+        run: npm run build
+
+  manifests:
+    name: Deploy manifests (kubeconform + compose config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # secret.example.yaml validates too — schema-check every shipped
+      # manifest (secret.yaml itself is gitignored).
+      - name: Validate k8s manifests (kubeconform)
+        run: |
+          docker run --rm -v "$PWD:/work" ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary \
+            /work/k8s/namespace.yaml /work/k8s/configmap.yaml \
+            /work/k8s/secret.example.yaml /work/k8s/postgres.yaml \
+            /work/k8s/backend.yaml /work/k8s/frontend.yaml \
+            /work/k8s/ingress.yaml /work/k8s/backup-cronjob.yaml
+
+      - name: Validate prod compose
+        env:
+          POSTGRES_PASSWORD: ci-schema-check
+        run: docker compose -f docker-compose.prod.yml config --quiet

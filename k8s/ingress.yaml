@@ -1,0 +1,33 @@
+# Ingress — requires an ingress controller (nginx) in the cluster.
+# TLS: either manage a certificate yourself and create the aida-tls secret,
+# or let cert-manager issue one (uncomment the annotations + cluster-issuer).
+#
+# Without an ingress controller, reach the stack directly:
+#   kubectl -n aida port-forward svc/frontend 8080:80
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aida
+  annotations:
+    # cert-manager:
+    #   cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Long-lived WebSocket connections (agent events, live command output):
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - aida.example.com
+      secretName: aida-tls
+  rules:
+    - host: aida.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

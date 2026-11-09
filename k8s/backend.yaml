@@ -1,0 +1,185 @@
+# Backend — SINGLE REPLICA BY DESIGN. Three in-process singletons live in the
+# backend's lifespan (main.py): the E3 Postgres-claim agent worker pool, the
+# E4 engagement scheduler, and the Telegram long-poll bot. Running two backend
+# pods would double-schedule engagements and race the pool. Scaling story:
+# scale the FRONTEND, keep this at 1 (or shard by database later).
+#
+# Pentest execution: ContainerService shells out to the docker CLI, pointed at
+# a privileged Docker-in-Docker sidecar via DOCKER_HOST. The init container
+# boots the pentest executor container inside that daemon. Workspaces/images
+# live in the DinD emptyDir — ephemeral across pod restarts (evidence and
+# findings are persisted in Postgres, so nothing audit-relevant is lost; swap
+# the emptyDir for a PVC if you need workspace continuity).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate        # never two backend pods (see the singleton note)
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        # DinD is a NATIVE SIDECAR (restartPolicy: Always, k8s ≥1.29): it
+        # starts before regular init containers and keeps running for the
+        # pod's lifetime. boot-pentest below waits for its daemon — a plain
+        # `containers:` sidecar would deadlock (app containers only start
+        # after ALL init containers complete).
+        - name: dind
+          image: docker:27-dind
+          restartPolicy: Always
+          securityContext:
+            privileged: true    # DinD requires it; it sees no host sockets
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""         # plain TCP on localhost inside the pod only
+          volumeMounts:
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "docker -H tcp://localhost:2375 info >/dev/null 2>&1"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 4Gi }
+        - name: boot-pentest
+          image: docker:27-cli
+          env:
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375
+            - name: PENTEST_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: aida-config
+                  key: PENTEST_IMAGE
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              until docker info >/dev/null 2>&1; do
+                echo "waiting for DinD daemon..."; sleep 2
+              done
+              docker rm -f aida-pentest 2>/dev/null || true
+              # Air-gapped / wrong-arch clusters: preload the image from a tar
+              # (see the commented `preload` hostPath volume below) instead of
+              # pulling from a registry.
+              if [ -f /preload/image.tar ]; then
+                echo "loading pentest image from /preload/image.tar ..."
+                docker load -i /preload/image.tar
+              else
+                docker pull "$PENTEST_IMAGE" || echo "WARN: pull failed — continuing with any existing image"
+              fi
+              docker run -d --name aida-pentest "$PENTEST_IMAGE" tail -f /dev/null
+              docker ps
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+      containers:
+        - name: backend
+          image: vasco0x4/aida-backend:latest
+          # IfNotPresent so side-loaded images (k3d image import, air-gap) are
+          # used; for a real cluster pin a digest and switch to Always.
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+              # Explicit: k8s would otherwise inject docker-link env
+              # POSTGRES_PORT=tcp://<svc-ip>:5432 for the "postgres" Service
+              # (config.py also normalizes this defensively).
+            - name: POSTGRES_DB
+              value: aida_assessments
+            - name: POSTGRES_USER
+              value: aida
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aida-secrets
+                  key: POSTGRES_PASSWORD
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aida-secrets
+                  key: SECRET_KEY
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375
+            - name: ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: aida-config
+                  key: ENVIRONMENT
+            - name: BACKEND_CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: aida-config
+                  key: BACKEND_CORS_ORIGINS
+            - name: DEFAULT_CONTAINER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: aida-config
+                  key: DEFAULT_CONTAINER_NAME
+          ports:
+            - containerPort: 8000
+              name: http
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001     # the image's dedicated `aida` user
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # writes /app/logs and /evidence
+          volumeMounts:
+            - name: evidence
+              mountPath: /evidence
+            - name: logs
+              mountPath: /app/logs
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 2Gi }
+      volumes:
+        # Air-gap path: place pentest.tar on the node and uncomment.
+        # - name: preload
+        #   hostPath:
+        #     path: /opt/aida/pentest.tar
+        #     type: File
+        - name: dind-storage
+          emptyDir: {}
+          # For workspace/image continuity across pod restarts, replace with a
+          # PVC (ReadWriteOnce) — see DEPLOYMENT.md "DinD persistence".
+        - name: evidence
+          emptyDir: {}          # DB-mirror only; use a PVC to keep files
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

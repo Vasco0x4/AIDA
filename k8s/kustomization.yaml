@@ -1,0 +1,25 @@
+# Kustomize base for the AIDA platform.
+#
+#   kubectl apply -k k8s/
+#
+# Prerequisite: create the secret first (never commit real values):
+#   cp k8s/secret.example.yaml k8s/secret.yaml   # then edit
+#
+# See DEPLOYMENT.md for the full runbook, TLS and scaling constraints.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aida
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml          # NOT committed — copy from secret.example.yaml and edit
+  - postgres.yaml
+  - backend.yaml
+  - frontend.yaml
+  - ingress.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: aida
