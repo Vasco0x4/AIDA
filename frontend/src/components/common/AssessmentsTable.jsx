@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { MoreVertical, Calendar, User, Tag, Clock, Edit3, Pin, PinOff } from 'lucide-react';
@@ -63,8 +64,8 @@ const AssessmentsTable = ({
   const formatDeadline = (endDate) => {
     if (!endDate) return 'No deadline';
     
-    const end = new Date(endDate);
-    const now = new Date();
+    const end = utcDate(endDate);
+    const now = utcDate();
     const diffTime = end - now;
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     
@@ -114,8 +115,8 @@ const AssessmentsTable = ({
     let bValue = b[sortField];
 
     if (sortField === 'created_at' || sortField === 'end_date') {
-      aValue = new Date(aValue);
-      bValue = new Date(bValue);
+      aValue = utcDate(aValue);
+      bValue = utcDate(bValue);
     }
 
     if (sortDirection === 'asc') {

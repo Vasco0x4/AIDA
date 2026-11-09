@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 import { useState, useEffect, useCallback } from 'react';
 import { Shield, Terminal, Eye, Target, Info, Zap, ChevronDown, ChevronUp, RefreshCw, Plus, Trash2, Clock } from 'lucide-react';
 import timelineService from '../../services/timelineService';
@@ -31,7 +32,7 @@ function TimelineEventCard({ event, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const Icon = EVENT_ICONS[event.event_type] || Info;
   const severityColor = SEVERITY_COLORS[event.severity] || SEVERITY_COLORS.INFO;
-  const time = new Date(event.created_at).toLocaleString();
+  const time = utcDate(event.created_at).toLocaleString();
 
   return (
     <div className="relative flex gap-3 group">

@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 import { useNavigate } from 'react-router-dom';
 import { X, Terminal } from '../icons';
 import { usePendingCommands } from '../../contexts/PendingCommandsContext';
@@ -37,7 +38,7 @@ const CommandApprovalToast = () => {
             gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
             osc.start(ctx.currentTime);
             osc.stop(ctx.currentTime + 0.2);
-        } catch (e) { }
+        } catch (e) { /* Audio is an optional notification enhancement. */ }
     }, []);
 
     // Handle visibility
@@ -63,7 +64,7 @@ const CommandApprovalToast = () => {
             return;
         }
 
-        const startTime = new Date(latestCommand.created_at).getTime();
+        const startTime = utcDate(latestCommand.created_at).getTime();
         // Use command-specific timeout if available, otherwise use global setting
         const commandTimeout = latestCommand.timeout_seconds || timeoutSec;
         const totalMs = commandTimeout * 1000;
@@ -123,6 +124,14 @@ const CommandApprovalToast = () => {
                             <span className="text-sm font-medium text-neutral-900 dark:text-white">
                                 Approval Required
                             </span>
+                            {latestCommand?.risk_level === 'high' && (
+                                <span
+                                    className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-red-600 text-white rounded"
+                                    title={`Exploit-class (${latestCommand.risk_reason || 'PoC approval chain'}) — admin-only approval`}
+                                >
+                                    exploit
+                                </span>
+                            )}
                         </div>
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-mono text-neutral-500">

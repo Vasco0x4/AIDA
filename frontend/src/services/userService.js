@@ -27,6 +27,11 @@ export async function resetUserPassword(id, newPassword) {
   return res.data;
 }
 
+export async function resetUserOtp(id) {
+  const res = await apiClient.post(`/users/${id}/reset-otp`);
+  return res.data;
+}
+
 export async function deleteUser(id) {
   await apiClient.delete(`/users/${id}`);
 }

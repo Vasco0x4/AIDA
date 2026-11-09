@@ -1,3 +1,4 @@
+import { utcDate } from '../../utils/utcDate';
 import { useState, useMemo } from 'react';
 import { Terminal, Check, X, Clock, ChevronDown, ChevronRight, Copy, Search } from '../icons';
 
@@ -169,7 +170,7 @@ const CommandHistory = ({ commands }) => {
                       {cmd.phase.replace('Phase ', 'P')}
                     </span>
                   )}
-                  <span>{new Date(cmd.created_at).toLocaleTimeString()}</span>
+                  <span>{utcDate(cmd.created_at).toLocaleTimeString()}</span>
                 </div>
 
                 {/* Status, Copy & Expand */}
@@ -290,7 +291,7 @@ const CommandHistory = ({ commands }) => {
                     <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-neutral-400 pt-1 border-t border-gray-200 dark:border-neutral-800">
                       <span>Code: {cmd.returncode}</span>
                       {cmd.container_name && <span>Container: {cmd.container_name}</span>}
-                      <span>{new Date(cmd.created_at).toLocaleString()}</span>
+                      <span>{utcDate(cmd.created_at).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- context hooks are the public API */
 /**
  * WebSocket Context Provider
  * Provides global WebSocket connection to all components

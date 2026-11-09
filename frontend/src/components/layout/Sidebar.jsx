@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Logo, LayoutDashboard, FileText, Terminal, Settings, ChevronLeft, ChevronRight } from '../icons';
-import { LogOut, Users as UsersIcon } from 'lucide-react';
+import { LogOut, Users as UsersIcon, LayoutGrid, Activity, CalendarClock, BookOpen, Compass, Code2 } from 'lucide-react';
 import commandSettingsService from '../../services/commandSettingsService';
 import { useWebSocketContext } from '../../contexts/WebSocketContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -11,20 +11,36 @@ const Sidebar = ({ onToggle }) => {
   const { isDark } = useTheme();
   const { user, logout } = useAuth();
   const location = useLocation();
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(() => {
+    try { return localStorage.getItem('aida.sidebar') !== 'collapsed' && window.innerWidth >= 1024; } catch { return false; }
+  });
   const [pendingCount, setPendingCount] = useState(0);
+  useEffect(() => {
+    if (window.innerWidth < 1024) setIsExpanded(false);
+  }, [location.pathname]);
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1024px)');
+    const collapse = (event) => { if (!event.matches) setIsExpanded(false); };
+    media.addEventListener('change', collapse);
+    return () => media.removeEventListener('change', collapse);
+  }, []);
 
   const isAdmin = user?.role === 'admin';
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+    { name: 'Dashboard', href: '/', icon: LayoutDashboard, group: 'Workspace' },
+    { name: 'Getting started', href: '/getting-started', icon: Compass },
+    { name: 'Task Board', href: '/board', icon: LayoutGrid },
+    { name: 'Scheduler', href: '/schedules', icon: CalendarClock },
+    { name: 'Scan Runs', href: '/runs', icon: Activity },
     { name: 'Assessments', href: '/assessments', icon: FileText },
-    { name: 'Commands', href: '/commands', icon: Terminal, showBadge: true },
+    { name: 'Application Security', href: '/appsec', icon: Code2, group: 'Code security' },
+    { name: 'Commands', href: '/commands', icon: Terminal, showBadge: true, group: 'Tools & administration' },
     ...(isAdmin ? [{ name: 'Users', href: '/users', icon: UsersIcon }] : []),
     { name: 'Settings', href: '/settings', icon: Settings },
+    { name: 'User guide', href: '/guide', icon: BookOpen },
   ];
 
-  const shouldShowExpanded = isExpanded || isHovered;
+  const shouldShowExpanded = isExpanded;
 
   // Check if we're on the assessments page to remove border
   const isAssessmentsPage = location.pathname.startsWith('/assessments');
@@ -66,13 +82,17 @@ const Sidebar = ({ onToggle }) => {
     <aside
       className={`h-screen bg-white dark:bg-neutral-800 ${isAssessmentsPage ? '' : 'border-r border-neutral-200 dark:border-neutral-700'} flex flex-col transition-all duration-300 ${shouldShowExpanded ? 'w-64' : 'w-16'
         }`}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+
     >
       {/* Toggle Button */}
       <div className="absolute -right-3 top-4 z-50">
         <button
-          onClick={() => setIsExpanded(!isExpanded)}
+          aria-label={isExpanded ? 'Collapse navigation' : 'Expand navigation'}
+          aria-expanded={isExpanded}
+          onClick={() => {
+            setIsExpanded(!isExpanded);
+            try { localStorage.setItem('aida.sidebar', isExpanded ? 'collapsed' : 'expanded'); } catch { /* optional preference */ }
+          }}
           className="w-6 h-6 bg-white dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-full flex items-center justify-center shadow-sm hover:shadow-md transition-shadow"
         >
           {shouldShowExpanded ? (
@@ -102,13 +122,18 @@ const Sidebar = ({ onToggle }) => {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-2 py-4 space-y-1">
+      <nav aria-label="Main navigation" className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-1">
         {navigation.map((item) => (
+          <React.Fragment key={item.href}>
+          {shouldShowExpanded && item.group && <p className="px-2 pt-4 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400">{item.group}</p>}
           <NavLink
             key={item.name}
             to={item.href}
+            end={item.href === '/'}
+            title={item.name}
+            aria-label={item.name}
             className={({ isActive }) =>
-              `flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium transition-all ${isActive
+              `flex items-center gap-2 px-2.5 py-2.5 rounded-lg text-sm font-medium transition-all ${isActive
                 ? 'bg-primary-100/50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-400 shadow-sm'
                 : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700 hover:text-neutral-900 dark:hover:text-neutral-100'
               }`
@@ -134,7 +159,7 @@ const Sidebar = ({ onToggle }) => {
                 )}
               </>
             )}
-          </NavLink>
+          </NavLink></React.Fragment>
         ))}
       </nav>
 

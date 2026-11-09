@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- context hooks are the public API */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useWebSocketContext } from './WebSocketContext';
 import commandSettingsService from '../services/commandSettingsService';

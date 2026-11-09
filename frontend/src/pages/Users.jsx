@@ -2,14 +2,20 @@
  * Users management page (admin only).
  */
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, KeyRound, ShieldCheck, ShieldOff, Power, PowerOff } from 'lucide-react';
+import { Plus, Trash2, KeyRound, Power, PowerOff, ShieldOff } from 'lucide-react';
 import {
-  listUsers, createUser, updateUser, resetUserPassword, deleteUser,
+  listUsers, createUser, updateUser, resetUserPassword, resetUserOtp, deleteUser,
 } from '../services/userService';
 import { useAuth } from '../contexts/AuthContext';
 
+const ROLE_STYLES = {
+  admin: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
+  auditor: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+  viewer: 'bg-neutral-100 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-300',
+};
+
 export default function Users() {
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, refreshUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -39,12 +45,25 @@ export default function Users() {
     }
   };
 
-  const handleToggleRole = async (u) => {
+  const handleRoleChange = async (u, role) => {
+    if (role === u.role) return;
     try {
-      await updateUser(u.id, { role: u.role === 'admin' ? 'user' : 'admin' });
+      await updateUser(u.id, { role });
       reload();
     } catch (err) {
       setError(err.response?.data?.detail || 'Update failed');
+      reload();
+    }
+  };
+
+  const handleResetOtp = async (u) => {
+    if (!confirm(`Reset two-factor authentication for "${u.username}"? This invalidates all recovery codes and pending challenges.`)) return;
+    try {
+      const updated = await resetUserOtp(u.id);
+      if (u.id === currentUser?.id) refreshUser(updated);
+      reload();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'OTP reset failed');
     }
   };
 
@@ -105,26 +124,43 @@ export default function Users() {
                   </td>
                   <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">{u.email || '—'}</td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${u.role === 'admin' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' : 'bg-neutral-100 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-300'}`}>
-                      {u.role}
-                    </span>
-                    {u.must_change_password && (
-                      <span className="ml-2 text-xs text-amber-600">must reset</span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={u.role}
+                        disabled={isSelf}
+                        onChange={(e) => handleRoleChange(u, e.target.value)}
+                        title={isSelf ? 'You cannot change your own role' : 'Change role'}
+                        className={`px-2 py-1 border rounded text-xs font-medium bg-transparent focus:ring-2 focus:ring-primary-500 outline-none ${ROLE_STYLES[u.role] || ROLE_STYLES.viewer} border-neutral-300 dark:border-neutral-600 disabled:opacity-60`}
+                      >
+                        <option value="viewer">viewer · read-only</option>
+                        <option value="auditor">auditor · operate</option>
+                        <option value="admin">admin · full control</option>
+                      </select>
+                      {u.must_change_password && (
+                        <span className="text-xs text-amber-600">must reset</span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded text-xs ${u.is_active ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
-                      {u.is_active ? 'active' : 'disabled'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded text-xs ${u.is_active ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+                        {u.is_active ? 'active' : 'disabled'}
+                      </span>
+                      {u.otp_enabled && (
+                        <span className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">OTP on</span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex gap-1">
-                      <IconBtn onClick={() => handleToggleRole(u)} title={u.role === 'admin' ? 'Demote to user' : 'Promote to admin'}>
-                        {u.role === 'admin' ? <ShieldOff className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
-                      </IconBtn>
                       <IconBtn onClick={() => handleToggleActive(u)} title={u.is_active ? 'Disable' : 'Enable'}>
                         {u.is_active ? <PowerOff className="w-4 h-4" /> : <Power className="w-4 h-4" />}
                       </IconBtn>
+                      {u.otp_enabled && (
+                        <IconBtn onClick={() => handleResetOtp(u)} title="Reset OTP and recovery codes">
+                          <ShieldOff className="w-4 h-4" />
+                        </IconBtn>
+                      )}
                       <IconBtn onClick={() => setResetTarget(u)} title="Reset password">
                         <KeyRound className="w-4 h-4" />
                       </IconBtn>
@@ -174,7 +210,7 @@ function CreateUserModal({ onClose, onCreated }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState('user');
+  const [role, setRole] = useState('auditor');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -207,8 +243,9 @@ function CreateUserModal({ onClose, onCreated }) {
         </Field>
         <Field label="Role">
           <select value={role} onChange={(e) => setRole(e.target.value)} className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary-500 outline-none">
-            <option value="user">user</option>
-            <option value="admin">admin</option>
+            <option value="viewer">viewer · read-only</option>
+            <option value="auditor">auditor · operate</option>
+            <option value="admin">admin · full control</option>
           </select>
         </Field>
         <p className="text-xs text-neutral-500">User will be required to change this password on first login.</p>

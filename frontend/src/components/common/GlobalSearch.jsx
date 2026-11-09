@@ -275,11 +275,11 @@ const GlobalSearch = () => {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="w-full max-w-md flex items-center gap-3 px-4 py-2 bg-neutral-50 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-lg text-sm text-neutral-500 dark:text-neutral-400 hover:border-neutral-300 dark:hover:border-neutral-500 hover:bg-white dark:hover:bg-neutral-600 transition-all"
+        className="w-full min-w-0 max-w-md flex items-center gap-3 px-4 py-2 bg-neutral-50 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-lg text-sm text-neutral-500 dark:text-neutral-400 hover:border-neutral-300 dark:hover:border-neutral-500 hover:bg-white dark:hover:bg-neutral-600 transition-all"
       >
-        <Search className="w-4 h-4" />
-        <span>Search assessments, commands...</span>
-        <kbd className="ml-auto px-2 py-0.5 bg-white dark:bg-neutral-600 border border-neutral-200 dark:border-neutral-500 dark:text-neutral-200 rounded text-xs font-mono">
+        <Search className="w-4 h-4 shrink-0" />
+        <span className="truncate">Search assessments, commands...</span>
+        <kbd className="hidden sm:inline-block shrink-0 ml-auto px-2 py-0.5 bg-white dark:bg-neutral-600 border border-neutral-200 dark:border-neutral-500 dark:text-neutral-200 rounded text-xs font-mono">
           <Command className="w-3 h-3 inline" />K
         </kbd>
       </button>

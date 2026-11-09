@@ -5,6 +5,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* One readable board surface; overflow stays inside the board on small screens. */
+.aida-board-columns {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
+  gap: 12px;
+  min-height: 360px;
+}
+@media (min-width: 1700px) {
+  .aida-board-columns { grid-auto-columns: minmax(0, 1fr); }
+}
+button:focus-visible, a:focus-visible, [tabindex="0"]:focus-visible {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 3px;
+}
+
 @layer base {
   * {
     @apply border-neutral-200 dark:border-neutral-700;
@@ -359,3 +375,38 @@
     transform: translateY(0);
   }
 }
+
+@layer components {
+  .aida-page-header {
+    @apply rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/60 p-5 sm:p-6 shadow-sm;
+    background-image: linear-gradient(115deg, rgba(14,165,233,.06), transparent 65%);
+  }
+  .aida-workflow-step {
+    @apply flex items-start gap-3 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/40 p-4;
+  }
+  .aida-step-number {
+    @apply flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900 text-primary-700 dark:text-primary-200 text-xs font-bold;
+  }
+  .aida-section-heading {
+    @apply border-t border-neutral-200 dark:border-neutral-700 pt-5 text-sm font-semibold text-neutral-900 dark:text-neutral-100;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+@layer components {
+  .aida-eyebrow { @apply text-xs font-semibold uppercase tracking-[0.18em] text-primary-700 dark:text-primary-300 mb-3; }
+  .aida-description { @apply text-sm leading-relaxed text-neutral-600 dark:text-neutral-300 mt-2; }
+  .aida-check-card { @apply flex flex-col rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/60 p-5 shadow-sm transition-colors; }
+  .aida-metric-card { @apply space-y-1 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/60 p-5; }
+  .aida-text-link { @apply inline-flex items-center gap-2 text-sm font-semibold text-primary-700 dark:text-primary-300 hover:underline; }
+  .aida-status { @apply rounded-full px-2.5 py-1 text-xs font-semibold; }
+  .aida-status-good { @apply bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200; }
+  .aida-status-warn { @apply bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-200; }
+  .aida-status-neutral { @apply bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-200; }
+  .aida-runner-note { @apply flex flex-wrap items-start gap-4 rounded-2xl border border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-neutral-800 p-5; }
+  .aida-skip-link { @apply fixed left-4 top-4 z-[100] rounded-lg bg-primary-700 text-white px-4 py-3; transform: translateY(-200%); }
+  .aida-skip-link:focus { transform: translateY(0); }
+}
+:focus-visible { outline: 2px solid #0284c7; outline-offset: 3px; }

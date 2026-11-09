@@ -1,8 +1,11 @@
+import { utcDate } from '../../utils/utcDate';
 import { useState, useEffect } from 'react';
-import { ChevronDown, ChevronRight, Shield, Eye, EyeOff, Info, AlertTriangle, Edit2, Trash2, Plus, Copy, Check } from '../icons';
+import { ChevronDown, ChevronRight, Shield, Eye, EyeOff, Info, AlertTriangle, Edit2, Trash2, Plus, Copy, Check, FileText } from '../icons';
 import { getSeverityBadgeClass, getSeverityBarClass, getSeverityTextClass } from '../../utils/severity';
 import UnifiedModal from '../common/UnifiedModal';
 import CvssCalculator from './CvssCalculator';
+import SubmissionModal from './SubmissionModal';
+import EvidenceGallery from './EvidenceGallery';
 import apiClient from '../../services/api';
 
 const CHECKED_KEY = (id) => `aida-checked-cards-${id}`;
@@ -10,6 +13,8 @@ const CHECKED_KEY = (id) => `aida-checked-cards-${id}`;
 const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, externalTrigger = 0 }) => {
   const [expandedCards, setExpandedCards] = useState(new Set());
   const [copiedCardId, setCopiedCardId] = useState(null);
+  const [submissionCard, setSubmissionCard] = useState(null);
+  const [evidenceRefresh, setEvidenceRefresh] = useState(0);
   const [checkedCards, setCheckedCards] = useState(() => {
     try {
       const raw = localStorage.getItem(CHECKED_KEY(assessmentId));
@@ -22,7 +27,7 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
     setCheckedCards(prev => {
       const next = new Set(prev);
       next.has(cardId) ? next.delete(cardId) : next.add(cardId);
-      try { localStorage.setItem(CHECKED_KEY(assessmentId), JSON.stringify([...next])); } catch {}
+      try { localStorage.setItem(CHECKED_KEY(assessmentId), JSON.stringify([...next])); } catch { /* Storage is optional. */ }
       return next;
     });
   };
@@ -65,6 +70,9 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
     if (card.target_service) meta.push(`| **Target** | ${card.target_service} |`);
     if (card.section_number) meta.push(`| **Section** | ${card.section_number} |`);
     if (card.status) meta.push(`| **Status** | ${card.status} |`);
+    if (card.lifecycle_status) meta.push(`| **Lifecycle** | ${card.lifecycle_status} |`);
+    if (card.first_seen_run_id) meta.push(`| **First seen run** | #${card.first_seen_run_id} |`);
+    if (card.last_seen_run_id) meta.push(`| **Last seen run** | #${card.last_seen_run_id} |`);
     lines.push(...meta);
     lines.push('');
 
@@ -103,7 +111,7 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
     }
 
     lines.push('---');
-    lines.push(`*Exported from AIDA on ${new Date().toISOString().split('T')[0]}*`);
+    lines.push(`*Exported from AIDA on ${utcDate().toISOString().split('T')[0]}*`);
 
     navigator.clipboard.writeText(lines.join('\n')).then(() => {
       setCopiedCardId(card.id);
@@ -359,6 +367,13 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
                       {cardType}
                     </span>
 
+                    {card.fingerprint && (
+                      <span className="px-2 py-0.5 text-xs rounded bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300"
+                        title={`First run #${card.first_seen_run_id || '—'}; last run #${card.last_seen_run_id || '—'}; observed ${card.seen_count || 1} runs`}>
+                        {card.lifecycle_status || 'new'}
+                      </span>
+                    )}
+
                     {/* Title */}
                     <span className={`text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate ${isChecked ? 'line-through text-neutral-400 dark:text-neutral-500' : ''}`}>
                       {title}
@@ -390,6 +405,15 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
 
                   {/* Action Buttons */}
                   <div className="flex-shrink-0 ml-4 flex items-center gap-1">
+                    {card.card_type === 'finding' && (
+                      <button
+                        onClick={() => setSubmissionCard(card)}
+                        className="p-1.5 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded text-neutral-400 dark:text-neutral-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                        title="Generate submission-ready report"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button
                       onClick={() => copyAsMarkdown(card)}
                       className="p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
@@ -441,6 +465,9 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
                         </div>
                       </div>
                     )}
+
+                    {/* Evidence (screenshots + PoC videos) */}
+                    <EvidenceGallery assessmentId={assessmentId} cardId={card.id} refreshKey={evidenceRefresh} />
 
                     {/* Notes */}
                     {card.notes && (
@@ -498,9 +525,9 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
 
                     {/* Metadata */}
                     <div className="flex items-center gap-4 text-xs text-neutral-500 dark:text-neutral-400 pt-2 border-t border-neutral-200 dark:border-neutral-700">
-                      <span>Created: {new Date(card.created_at).toLocaleDateString()}</span>
+                      <span>Created: {utcDate(card.created_at).toLocaleDateString()}</span>
                       {card.updated_at && card.updated_at !== card.created_at && (
-                        <span>Updated: {new Date(card.updated_at).toLocaleDateString()}</span>
+                        <span>Updated: {utcDate(card.updated_at).toLocaleDateString()}</span>
                       )}
                     </div>
                   </div>
@@ -512,6 +539,14 @@ const CardsTable = ({ cards, assessmentId, onUpdate, hideAddButton = false, exte
           );
         })}
       </div>
+
+      {/* Submission-ready report modal */}
+      <SubmissionModal
+        isOpen={!!submissionCard}
+        card={submissionCard}
+        onClose={() => setSubmissionCard(null)}
+        onSaved={() => setEvidenceRefresh((n) => n + 1)}
+      />
 
       {/* Add/Edit Modal */}
       <UnifiedModal
