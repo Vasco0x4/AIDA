@@ -137,21 +137,24 @@ Claude runs in a tmux session: **detach with `Ctrl-b d`** and it keeps working; 
 
 | | |
 |--|--|
-| Container | `aida-agent-<id>`, image `vasco0x4/aida-agent` (aida-pentest tools + Claude Code), non-root user `aida` with sudo |
+| Container | `aida-agent-<id>`, image `vasco0x4/aida-agent` (aida-pentest tools + Claude Code), non-root user `aida` without sudo |
+| Privileges | only the `NET_RAW` capability, so nmap SYN and OS scans work. The image has no setuid binary, so no process in the container can become root or hold more. System packages can't be installed; `pip install --user` works |
+| Resources | at most 4 GB of memory, 2 CPUs and 2048 processes. Change them with `AIDA_AGENT_MEMORY`, `AIDA_AGENT_CPUS` and `AIDA_AGENT_PIDS_LIMIT` (empty = no limit) |
+| Claude config | its own volume `aida-agent-claude-<id>` (login, settings, conversations), never shared with another assessment |
 | Workspace | only this assessment's folder (`~/.aida/workspaces/<name>`), mounted at the same path as in `aida-pentest` |
 | Network | its own bridge `aida-agent-net-<id>`: internet access, the AIDA backend reachable as `aida-backend`, but no access to postgres, the docker proxy or other assessments |
 | MCP | HTTP transport with an `agent` API key bound to this assessment (cached in `.aida/agents/<id>.key`): the agent can't load, list or create any other assessment |
 
 While an assessment's agent container is running, its `execute()` commands run there instead of the shared `aida-pentest` container.
 
-**Claude login.** The `aida-claude-config` volume holds Claude Code's login and settings, shared by all agent containers: log in once (the first `aida run` shows the login screen). Alternatively export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) before `aida run`; they're forwarded to Claude at launch and never stored in the container.
+**Claude login.** Each assessment's container keeps its own Claude Code login and settings, so an agent can't read another assessment's credentials or leave hooks that would run there. The first `aida run` of an assessment shows the login screen. Alternatively, export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) before `aida run`: they're forwarded to Claude at launch and never stored in the container. `aida rm X` deletes that login along with the container.
 
 **The agent image.** The first `aida run` downloads `vasco0x4/aida-agent` (amd64 and arm64; it shares most of its layers with `aida-pentest`, already on your machine). `aida start` / `aida update` keep it up to date once you have it, and it's republished weekly with the latest Claude Code.
 
 | | |
 |--|--|
 | `aida run X --pull` | download the latest image now (newer Claude Code) |
-| `aida run X --recreate` | recreate the container on the current image (workspace kept, tools you installed in the container are lost) |
+| `aida run X --recreate` | recreate the container on the current image (workspace and Claude login kept, tools you installed in the container are lost) |
 | `aida run X --new` | restart the Claude session, keep the container |
 | `aida run X --rebuild` | build the image from `agent/Dockerfile` instead of downloading it |
 

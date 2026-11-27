@@ -115,7 +115,7 @@ aida --assessment "target-corp"
 aida --assessment "target-corp" --cli codex
 ```
 
-The first `aida run` downloads the agent image and asks you to log in to Claude. Detach with `Ctrl-b d`: the agent keeps working, and `aida run` re-attaches.
+The first `aida run` downloads the agent image. Each assessment's container asks you to log in to Claude once, since logins are never shared between assessments. Detach with `Ctrl-b d`: the agent keeps working, and `aida run` re-attaches.
 
 `aida stop` · `aida update` · `aida status` · `aida doctor` when something is off.
 

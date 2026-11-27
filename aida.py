@@ -1268,7 +1268,8 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
 # network so the agent can reach the HTTP MCP endpoint, but agents can't
 # reach each other, postgres or the docker proxy. Each container gets an MCP
 # key bound to its assessment, so agents run side by side, each seeing only
-# its own assessment.
+# its own assessment. It also gets its own Claude config volume, and runs as
+# a non-root user without sudo, holding no capability but NET_RAW.
 
 # Published for amd64 and arm64 by .github/workflows/docker-publish.yml;
 # built locally from agent/Dockerfile only if it can't be downloaded.
@@ -1280,8 +1281,19 @@ AGENT_KEYS_DIR = AIDA_CONFIG_DIR / "agents"
 # Must match the backend's AGENT_CONTAINER_PREFIX (same env var name there).
 AGENT_CONTAINER_PREFIX = os.getenv("AGENT_CONTAINER_PREFIX", "aida-agent-")
 AGENT_NETWORK_PREFIX = f"{AGENT_CONTAINER_PREFIX}net-"
-# Shared Claude login across assessments.
-AGENT_CLAUDE_VOLUME = os.getenv("AIDA_CLAUDE_VOLUME", "aida-claude-config")
+# Claude Code's config dir (login, settings, conversations) is a volume per
+# assessment, so one agent can't read another's credentials or plant hooks
+# that would run in another assessment's container.
+AGENT_CLAUDE_VOLUME_PREFIX = f"{AGENT_CONTAINER_PREFIX}claude-"
+# Resource limits per agent container (an empty value removes one), so a
+# runaway scan or a fork bomb in one assessment can't take the machine down.
+AGENT_MEMORY = os.getenv("AIDA_AGENT_MEMORY", "4g")
+AGENT_CPUS = os.getenv("AIDA_AGENT_CPUS", "2")
+AGENT_PIDS_LIMIT = os.getenv("AIDA_AGENT_PIDS_LIMIT", "2048")
+# Version of the container isolation, also set as the aida.sandbox label by
+# agent/Dockerfile. Bump both when the settings in ensure_agent_container
+# change, so `aida run` notices images and containers made for older ones.
+AGENT_SANDBOX_VERSION = "2"
 AGENT_TMUX_SESSION = "aida"
 AGENT_USER = "aida"
 BACKEND_CONTAINER = os.getenv("AIDA_BACKEND_CONTAINER", "aida_backend")
@@ -1325,6 +1337,13 @@ def _container_state(name: str) -> Optional[str]:
     """Return the container status ("running", "exited", ...) or None if missing."""
     result = _docker("inspect", "-f", "{{.State.Status}}", name, check=False)
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _label(obj: str, key: str) -> str:
+    """A label of an image or container ("" when it doesn't have it)."""
+    out = _docker("inspect", "-f", f'{{{{index .Config.Labels "{key}"}}}}', obj,
+                  check=False).stdout.strip()
+    return "" if out.startswith("<no value>") else out
 
 
 def _check_agent_prerequisites() -> None:
@@ -1437,11 +1456,13 @@ def ensure_agent_image(rebuild: bool = False, pull: bool = False) -> str:
     when that fails (offline, fork without published images...) or on
     --rebuild. --pull downloads it again to get a newer Claude Code.
     """
+    pulled = False
     if rebuild:
         build_agent_image()
     elif pull or not _docker_ok("image", "inspect", AGENT_IMAGE):
         have_one = _docker_ok("image", "inspect", AGENT_IMAGE)
-        if not pull_agent_image():
+        pulled = pull_agent_image()
+        if not pulled:
             if have_one:
                 console.print(f"[yellow]⚠ Could not download {AGENT_IMAGE} — "
                               "using the one already here.[/yellow]\n")
@@ -1449,6 +1470,14 @@ def ensure_agent_image(rebuild: bool = False, pull: bool = False) -> str:
                 console.print(f"[yellow]⚠ Could not download {AGENT_IMAGE} — "
                               "building it from agent/Dockerfile instead.[/yellow]\n")
                 build_agent_image()
+    if _label(AGENT_IMAGE, "aida.sandbox") != AGENT_SANDBOX_VERSION:
+        # Made for an older `aida run` (sudo, nmap needing NET_ADMIN): it
+        # can't run with the current container settings.
+        console.print(f"[yellow]⚠ {AGENT_IMAGE} was made for an older version of aida — "
+                      "getting a current one.[/yellow]\n")
+        if (pulled or not pull_agent_image()
+                or _label(AGENT_IMAGE, "aida.sandbox") != AGENT_SANDBOX_VERSION):
+            build_agent_image()
     return _image_for_host_user(AGENT_IMAGE)
 
 
@@ -1517,6 +1546,37 @@ def ensure_agent_network(assessment_id: int) -> str:
     return network
 
 
+def ensure_agent_claude_volume(assessment_id: int) -> str:
+    """Create the assessment's own Claude config volume and return its name."""
+    volume = f"{AGENT_CLAUDE_VOLUME_PREFIX}{assessment_id}"
+    if not _docker_ok("volume", "inspect", volume):
+        _docker("volume", "create",
+                "--label", "aida.role=agent",
+                "--label", f"aida.assessment.id={assessment_id}",
+                volume)
+    return volume
+
+
+def _agent_limits() -> list:
+    """docker run flags for the resource limits of an agent container."""
+    args = []
+    if AGENT_MEMORY:
+        args += ["--memory", AGENT_MEMORY]
+    if AGENT_CPUS:
+        cpus = AGENT_CPUS
+        # Docker refuses more CPUs than the machine (or Docker's VM) has.
+        ncpu = _docker("info", "-f", "{{.NCPU}}", check=False).stdout.strip()
+        try:
+            if float(cpus) > int(ncpu):
+                cpus = ncpu
+        except ValueError:
+            pass  # docker reports a bad AIDA_AGENT_CPUS itself
+        args += ["--cpus", cpus]
+    if AGENT_PIDS_LIMIT:
+        args += ["--pids-limit", AGENT_PIDS_LIMIT]
+    return args
+
+
 def ensure_agent_container(
     assessment_id: int, assessment_name: str, host_path: str, container_path: str,
     network: str, image: str, recreate: bool = False,
@@ -1532,20 +1592,28 @@ def ensure_agent_container(
     if state is None:
         # Pre-create the host dir so Docker doesn't create it as root.
         Path(host_path).mkdir(parents=True, exist_ok=True)
+        claude_volume = ensure_agent_claude_volume(assessment_id)
         _docker(
             "run", "-d",
             "--name", name,
             "--hostname", f"aida-{assessment_id}",
             "--network", network,
             "--init",
-            "--cap-add", "NET_ADMIN",
+            # Raw sockets only (nmap SYN/OS scans, ping). The image has no
+            # sudo or setuid binary, so this is all any process in the
+            # container can ever hold, root included. No no-new-privileges:
+            # it would also disable nmap's file capability (agent/Dockerfile).
+            "--cap-drop", "ALL",
+            "--cap-add", "NET_RAW",
+            *_agent_limits(),
             "--label", "aida.role=agent",
             "--label", f"aida.assessment.id={assessment_id}",
             "--label", f"aida.assessment.name={assessment_name}",
+            "--label", f"aida.sandbox={AGENT_SANDBOX_VERSION}",
             # Same path as in the shared pentest container, so the
             # workspace_path stored on the assessment is valid in both.
             "-v", f"{host_path}:{container_path}",
-            "-v", f"{AGENT_CLAUDE_VOLUME}:/home/{AGENT_USER}/.claude",
+            "-v", f"{claude_volume}:/home/{AGENT_USER}/.claude",
             "-w", container_path,
             image,
         )
@@ -1554,6 +1622,11 @@ def ensure_agent_container(
         if state != "running":
             _docker("start", name)
             console.print(f"[green]✓[/green] Container [cyan]{name}[/cyan] started")
+        if _label(name, "aida.sandbox") != AGENT_SANDBOX_VERSION:
+            console.print("[yellow]⚠ This container was made by an older `aida run` (Claude login "
+                          "shared with other assessments, sudo, more privileges). --recreate "
+                          "switches to the current isolation: the workspace is kept, and you "
+                          "log in to Claude again.[/yellow]")
         current = _docker("inspect", "-f", "{{.Image}}", name).stdout.strip()
         latest = _docker("image", "inspect", "-f", "{{.Id}}", image).stdout.strip()
         if current != latest:
@@ -1561,9 +1634,14 @@ def ensure_agent_container(
                           "--recreate switches to it (tools installed in the container are lost)[/dim]")
 
     # Workspace dirs created earlier by the root-run pentest container may
-    # not be writable by the agent user.
+    # not be writable by the agent user. Root in the agent container can't
+    # chown (it has no capabilities), so a one-off container does it.
     if not _docker_ok("exec", "-u", AGENT_USER, name, "test", "-w", container_path):
-        _docker("exec", "-u", "root", name, "chown", "-R", f"{AGENT_USER}:", container_path)
+        own_image = _docker("inspect", "-f", "{{.Image}}", name).stdout.strip()
+        _docker("run", "--rm", "--network", "none", "--user", "root",
+                "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_READ_SEARCH",
+                "-v", f"{host_path}:{container_path}", "--entrypoint", "chown",
+                own_image, "-R", f"{AGENT_USER}:", container_path)
     _docker("exec", "-u", AGENT_USER, name, "mkdir", "-p",
             *[f"{container_path}/{d}" for d in ("recon", "exploits", "loot", "notes", "scripts", "context")])
     return name
@@ -1625,7 +1703,9 @@ def build_agent_preprompt(preprompt: Optional[str], assessment: dict, container:
 You are running inside this assessment's dedicated container. Your own Bash and file tools,
 and the AIDA `execute()` / `python_exec()` / `http_request()` tools, all run in this same
 sandbox. The workspace is `{assessment["container_path"]}` (your current directory).
-Missing tools can be installed with `sudo apt-get install` or `pip install`.
+There is no sudo: install missing Python tools with `pip install --user` (their commands
+land in ~/.local/bin, already on PATH). System packages can't be installed: if a tool you
+need is missing, say so instead of looking for a way around it.
 The AIDA MCP server is bound to this assessment only (other assessments are not visible).
 Start by calling `load_assessment(name="{name}")` to read its scope, findings and history.
 """
@@ -1648,7 +1728,7 @@ def agent_cli():
 @click.option("--new", "new_session", is_flag=True,
               help="Restart the Claude session (container and files are kept)")
 @click.option("--recreate", is_flag=True,
-              help="Recreate the container (workspace kept, tools installed in it are lost)")
+              help="Recreate the container (workspace and Claude login kept, tools installed in it are lost)")
 @click.option("--pull", is_flag=True,
               help="Download the latest aida-agent image first (newer Claude Code)")
 @click.option("--rebuild", is_flag=True,
@@ -1756,16 +1836,19 @@ def agent_stop(assessment):
 @click.argument("assessment")
 @click.option("-f", "--force", is_flag=True, help="Don't ask for confirmation")
 def agent_rm(assessment, force):
-    """Remove ASSESSMENT's agent container and network (the workspace is kept)."""
+    """Remove ASSESSMENT's agent container, network and Claude login (the workspace is kept)."""
     container = _find_agent_container(assessment)
     if not force and not click.confirm(
-        f"Remove {container}? Workspace files stay on disk; tools installed in the container are lost"
+        f"Remove {container}? Workspace files stay on disk; tools installed in the container, "
+        "and its Claude login and conversations, are lost"
     ):
         return
-    network = f"{AGENT_NETWORK_PREFIX}{container[len(AGENT_CONTAINER_PREFIX):]}"
+    assessment_id = container[len(AGENT_CONTAINER_PREFIX):]
+    network = f"{AGENT_NETWORK_PREFIX}{assessment_id}"
     _docker("rm", "-f", container)
     _docker("network", "disconnect", "-f", network, BACKEND_CONTAINER, check=False)
     _docker("network", "rm", network, check=False)
+    _docker("volume", "rm", f"{AGENT_CLAUDE_VOLUME_PREFIX}{assessment_id}", check=False)
     console.print(f"[green]✓[/green] Removed [cyan]{container}[/cyan]\n")
 
 
