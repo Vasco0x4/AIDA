@@ -1,0 +1,5 @@
+# Test dependencies (CI: .github/workflows/backend-tests.yml). The tests also
+# need a Postgres: see tests/conftest.py.
+-r requirements.txt
+pytest==9.2.0
+pytest-asyncio==1.5.0

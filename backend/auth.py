@@ -240,7 +240,8 @@ async def verify_mcp_api_key(
     containers) bypass the feature flag and are always accepted from private
     addresses: the agent reaches the backend over a dedicated Docker bridge,
     so it never comes from loopback. The toggle and policy keep governing
-    external MCP clients.
+    external MCP clients. An agent key must be bound to an assessment
+    (``assessment_id``): the MCP server then only shows that assessment.
     """
     token = (credentials.credentials if credentials and credentials.credentials else None) or api_key
     key = _match_api_key(db, token) if token else None
@@ -278,6 +279,20 @@ async def verify_mcp_api_key(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or revoked API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if key.owner is None or not key.owner.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key owner is inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if agent_key and key.assessment_id is None:
+        # Agent keys minted before keys were bound to an assessment would
+        # otherwise see every assessment. `aida run` replaces them.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Agent key is not bound to an assessment; run `aida run <assessment> --new` to get a new one",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

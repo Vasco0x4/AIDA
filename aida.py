@@ -1266,14 +1266,22 @@ Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{asse
 # Bash/Edit tools and the AIDA execute() tool share the same sandbox. The
 # container sits on its own bridge network; the backend is attached to that
 # network so the agent can reach the HTTP MCP endpoint, but agents can't
-# reach each other, postgres or the docker proxy.
+# reach each other, postgres or the docker proxy. Each container gets an MCP
+# key bound to its assessment, so agents run side by side, each seeing only
+# its own assessment.
 
-AGENT_IMAGE = os.getenv("AIDA_AGENT_IMAGE", "aida-agent:latest")
+# Published for amd64 and arm64 by .github/workflows/docker-publish.yml;
+# built locally from agent/Dockerfile only if it can't be downloaded.
+AGENT_IMAGE = os.getenv(
+    "AIDA_AGENT_IMAGE", f"vasco0x4/aida-agent:{os.getenv('AIDA_VERSION') or 'latest'}"
+)
 AGENT_BUILD_DIR = AIDA_ROOT / "agent"
 AGENT_KEYS_DIR = AIDA_CONFIG_DIR / "agents"
-AGENT_CONTAINER_PREFIX = "aida-agent-"      # must match backend AGENT_CONTAINER_PREFIX
-AGENT_NETWORK_PREFIX = "aida-agent-net-"
-AGENT_CLAUDE_VOLUME = "aida-claude-config"  # shared Claude login across assessments
+# Must match the backend's AGENT_CONTAINER_PREFIX (same env var name there).
+AGENT_CONTAINER_PREFIX = os.getenv("AGENT_CONTAINER_PREFIX", "aida-agent-")
+AGENT_NETWORK_PREFIX = f"{AGENT_CONTAINER_PREFIX}net-"
+# Shared Claude login across assessments.
+AGENT_CLAUDE_VOLUME = os.getenv("AIDA_CLAUDE_VOLUME", "aida-claude-config")
 AGENT_TMUX_SESSION = "aida"
 AGENT_USER = "aida"
 BACKEND_CONTAINER = os.getenv("AIDA_BACKEND_CONTAINER", "aida_backend")
@@ -1336,19 +1344,40 @@ def _check_agent_prerequisites() -> None:
         sys.exit(1)
 
 
-def ensure_agent_image(rebuild: bool = False) -> None:
-    """Build the aida-agent image if it's missing (or on --rebuild)."""
-    if not rebuild and _docker_ok("image", "inspect", AGENT_IMAGE):
-        return
+def _host_ids() -> Optional[tuple]:
+    """UID/GID the agent user needs, or None when any will do.
 
-    console.print(f"[bold]Building {AGENT_IMAGE}[/bold] [dim](first run takes a few minutes)[/dim]\n")
-    build_args = []
-    # On Linux, bind-mounted files keep their numeric owner: build the agent
-    # user with the host UID/GID so workspace files stay yours. Docker
-    # Desktop / OrbStack on macOS remap ownership, so the default is fine.
+    On Linux, bind-mounted files keep their numeric owner: the agent user
+    must have your UID/GID so workspace files stay yours. Docker Desktop /
+    OrbStack on macOS remap ownership, so the image's user is fine there.
+    """
     if sys.platform.startswith("linux") and os.getuid() != 0:
-        build_args += ["--build-arg", f"AIDA_UID={os.getuid()}",
-                       "--build-arg", f"AIDA_GID={os.getgid()}"]
+        return (str(os.getuid()), str(os.getgid()))
+    return None
+
+
+def _image_ids(image: str) -> tuple:
+    """UID/GID of the agent user in ``image`` (labels set by agent/Dockerfile)."""
+    result = _docker("image", "inspect", "-f",
+                     '{{index .Config.Labels "aida.uid"}} {{index .Config.Labels "aida.gid"}}',
+                     image, check=False)
+    ids = tuple(result.stdout.split())
+    if len(ids) == 2 and "<no" not in result.stdout:
+        return ids
+    # Built before the labels existed: ask the image.
+    uid = _docker("run", "--rm", "--entrypoint", "id", image, "-u", check=False).stdout.strip()
+    gid = _docker("run", "--rm", "--entrypoint", "id", image, "-g", check=False).stdout.strip()
+    return (uid, gid)
+
+
+def build_agent_image() -> None:
+    """Build AGENT_IMAGE from agent/Dockerfile (slow: a few minutes)."""
+    console.print(f"[bold]Building {AGENT_IMAGE} from agent/Dockerfile[/bold] "
+                  "[dim](takes a few minutes)[/dim]\n")
+    build_args = []
+    ids = _host_ids()
+    if ids:
+        build_args += ["--build-arg", f"AIDA_UID={ids[0]}", "--build-arg", f"AIDA_GID={ids[1]}"]
     result = subprocess.run(
         ["docker", "build", "-t", AGENT_IMAGE, *build_args, str(AGENT_BUILD_DIR)]
     )
@@ -1358,37 +1387,116 @@ def ensure_agent_image(rebuild: bool = False) -> None:
     console.print()
 
 
+def pull_agent_image() -> bool:
+    """Download AGENT_IMAGE (published for amd64 and arm64)."""
+    console.print(f"[bold]Downloading {AGENT_IMAGE}[/bold] "
+                  "[dim](first run; shares most layers with aida-pentest)[/dim]\n")
+    ok = subprocess.run(["docker", "pull", AGENT_IMAGE]).returncode == 0
+    console.print()
+    return ok
+
+
+def _image_for_host_user(image: str) -> str:
+    """Return ``image``, or a thin local layer on it that remaps the agent
+    user to your UID/GID (Linux users whose ids aren't 1000:1000)."""
+    ids = _host_ids()
+    if ids is None or _image_ids(image) == ids:
+        return image
+    base_id = _docker("image", "inspect", "-f", "{{.Id}}", image).stdout.strip()
+    local = f"aida-agent:uid{ids[0]}-gid{ids[1]}"
+    current_base = _docker("image", "inspect", "-f", '{{index .Config.Labels "aida.base"}}',
+                           local, check=False).stdout.strip()
+    if current_base == base_id:
+        return local
+
+    uid, gid = ids
+    console.print(f"[dim]Adapting {image} to your user (uid {uid}, gid {gid})…[/dim]")
+    dockerfile = f"""FROM {image}
+USER root
+RUN set -e; \\
+    if getent group {gid} >/dev/null; then usermod -g {gid} aida; \\
+    else groupmod -g {gid} "$(id -gn aida)"; fi; \\
+    usermod -u {uid} aida; \\
+    chown -R {uid}:{gid} /home/aida /workspace
+USER aida
+LABEL aida.uid="{uid}" aida.gid="{gid}" aida.base="{base_id}"
+"""
+    result = subprocess.run(["docker", "build", "-q", "-t", local, "-"],
+                            input=dockerfile, text=True, capture_output=True)
+    if result.returncode != 0:
+        console.print(f"[red]✗ Failed to adapt {image} to your user:[/red] {result.stderr.strip()}")
+        console.print(f"  → build it with your ids instead: [cyan]aida run <assessment> --rebuild[/cyan]\n")
+        sys.exit(1)
+    return local
+
+
+def ensure_agent_image(rebuild: bool = False, pull: bool = False) -> str:
+    """Make sure the agent image is here and return the image to run.
+
+    Downloads the published image (fast), and only builds agent/Dockerfile
+    when that fails (offline, fork without published images...) or on
+    --rebuild. --pull downloads it again to get a newer Claude Code.
+    """
+    if rebuild:
+        build_agent_image()
+    elif pull or not _docker_ok("image", "inspect", AGENT_IMAGE):
+        have_one = _docker_ok("image", "inspect", AGENT_IMAGE)
+        if not pull_agent_image():
+            if have_one:
+                console.print(f"[yellow]⚠ Could not download {AGENT_IMAGE} — "
+                              "using the one already here.[/yellow]\n")
+            else:
+                console.print(f"[yellow]⚠ Could not download {AGENT_IMAGE} — "
+                              "building it from agent/Dockerfile instead.[/yellow]\n")
+                build_agent_image()
+    return _image_for_host_user(AGENT_IMAGE)
+
+
 def ensure_agent_key(backend_url: str, token: str, assessment_id: int, assessment_name: str) -> str:
     """Return this assessment's agent-scoped MCP key, minting one if needed.
 
+    The key is bound to the assessment: the agent can't see any other one.
     The plaintext key is only shown once by the backend, so it is cached in
     .aida/agents/<id>.key (chmod 600) and re-validated against the key list.
+    Older agent keys of this assessment (or unbound ones from before keys
+    were bound) are revoked when a new one is minted.
     """
     key_file = AGENT_KEYS_DIR / f"{assessment_id}.key"
     headers = {"Authorization": f"Bearer {token}"}
 
+    def usable(k: dict) -> bool:
+        return (k["scope"] == "agent" and not k["revoked_at"]
+                and k.get("assessment_id") == assessment_id)
+
     with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"{backend_url}/api-keys", headers=headers)
+        keys = r.json() if r.status_code == 200 else []
         cached = _read_file_token(key_file)
-        if cached:
-            r = client.get(f"{backend_url}/api-keys", headers=headers)
-            if r.status_code == 200 and any(
-                cached.startswith(k["key_prefix"]) and not k["revoked_at"] and k["scope"] == "agent"
-                for k in r.json()
-            ):
-                return cached
+        if cached and any(cached.startswith(k["key_prefix"]) and usable(k) for k in keys):
+            return cached
 
         r = client.post(
             f"{backend_url}/api-keys",
             headers=headers,
-            json={"name": f"agent: {assessment_name}"[:100], "scope": "agent"},
+            json={"name": f"agent: {assessment_name}"[:100], "scope": "agent",
+                  "assessment_id": assessment_id},
         )
-    if r.status_code != 201:
-        console.print(f"[red]✗ Could not create an agent API key ({r.status_code}): {r.text}[/red]\n")
-        sys.exit(1)
+        if r.status_code != 201:
+            console.print(f"[red]✗ Could not create an agent API key ({r.status_code}): {r.text}[/red]\n")
+            sys.exit(1)
+        new_key = r.json()
+
+        # This container only ever uses the newest key: retire the others.
+        for k in keys:
+            if k["scope"] != "agent" or k["revoked_at"]:
+                continue
+            stale_cached = cached is not None and cached.startswith(k["key_prefix"])
+            if k.get("assessment_id") == assessment_id or stale_cached:
+                client.delete(f"{backend_url}/api-keys/{k['id']}", headers=headers)
 
     AGENT_KEYS_DIR.mkdir(parents=True, exist_ok=True)
-    _write_file_token(key_file, r.json()["full_key"])
-    return r.json()["full_key"]
+    _write_file_token(key_file, new_key["full_key"])
+    return new_key["full_key"]
 
 
 def ensure_agent_network(assessment_id: int) -> str:
@@ -1411,7 +1519,7 @@ def ensure_agent_network(assessment_id: int) -> str:
 
 def ensure_agent_container(
     assessment_id: int, assessment_name: str, host_path: str, container_path: str,
-    network: str, recreate: bool = False,
+    network: str, image: str, recreate: bool = False,
 ) -> str:
     """Create/start the assessment's agent container and return its name."""
     name = f"{AGENT_CONTAINER_PREFIX}{assessment_id}"
@@ -1439,12 +1547,18 @@ def ensure_agent_container(
             "-v", f"{host_path}:{container_path}",
             "-v", f"{AGENT_CLAUDE_VOLUME}:/home/{AGENT_USER}/.claude",
             "-w", container_path,
-            AGENT_IMAGE,
+            image,
         )
         console.print(f"[green]✓[/green] Container [cyan]{name}[/cyan] created")
-    elif state != "running":
-        _docker("start", name)
-        console.print(f"[green]✓[/green] Container [cyan]{name}[/cyan] started")
+    else:
+        if state != "running":
+            _docker("start", name)
+            console.print(f"[green]✓[/green] Container [cyan]{name}[/cyan] started")
+        current = _docker("inspect", "-f", "{{.Image}}", name).stdout.strip()
+        latest = _docker("image", "inspect", "-f", "{{.Id}}", image).stdout.strip()
+        if current != latest:
+            console.print(f"[dim]A newer {image} is available — "
+                          "--recreate switches to it (tools installed in the container are lost)[/dim]")
 
     # Workspace dirs created earlier by the root-run pentest container may
     # not be writable by the agent user.
@@ -1461,12 +1575,24 @@ def _write_agent_file(container: str, path: str, content: str) -> None:
             f'umask 077 && mkdir -p "$(dirname {path})" && cat > {path}', input=content)
 
 
+def _agent_containers(fields: str) -> list:
+    """Rows of this install's agent containers (``docker ps`` format fields)."""
+    result = _docker("ps", "-a", "--filter", "label=aida.role=agent",
+                     "--format", "{{.Names}}\t" + fields)
+    rows = []
+    for line in result.stdout.splitlines():
+        cols = line.split("\t")
+        # Another AIDA install on this Docker host uses another prefix.
+        suffix = cols[0][len(AGENT_CONTAINER_PREFIX):]
+        if cols[0].startswith(AGENT_CONTAINER_PREFIX) and suffix.isdigit():
+            rows.append(cols)
+    return rows
+
+
 def _find_agent_container(assessment: str) -> str:
     """Resolve an assessment name or id to its agent container (no backend needed)."""
-    result = _docker("ps", "-a", "--filter", "label=aida.role=agent", "--format",
-                     '{{.Names}}\t{{.Label "aida.assessment.id"}}\t{{.Label "aida.assessment.name"}}')
-    for line in result.stdout.splitlines():
-        name, aid, aname = (line.split("\t") + ["", "", ""])[:3]
+    for row in _agent_containers('{{.Label "aida.assessment.id"}}\t{{.Label "aida.assessment.name"}}'):
+        name, aid, aname = (row + ["", "", ""])[:3]
         if assessment == aid or assessment.strip().lower() == aname.strip().lower():
             return name
     console.print(f"[red]✗ No agent container for '{assessment}'[/red] — start one with "
@@ -1500,7 +1626,8 @@ You are running inside this assessment's dedicated container. Your own Bash and 
 and the AIDA `execute()` / `python_exec()` / `http_request()` tools, all run in this same
 sandbox. The workspace is `{assessment["container_path"]}` (your current directory).
 Missing tools can be installed with `sudo apt-get install` or `pip install`.
-Before using assessment-scoped AIDA MCP tools, call `load_assessment(name="{name}")`.
+The AIDA MCP server is bound to this assessment only (other assessments are not visible).
+Start by calling `load_assessment(name="{name}")` to read its scope, findings and history.
 """
 
 
@@ -1522,9 +1649,12 @@ def agent_cli():
               help="Restart the Claude session (container and files are kept)")
 @click.option("--recreate", is_flag=True,
               help="Recreate the container (workspace kept, tools installed in it are lost)")
-@click.option("--rebuild", is_flag=True, help="Rebuild the aida-agent image first")
+@click.option("--pull", is_flag=True,
+              help="Download the latest aida-agent image first (newer Claude Code)")
+@click.option("--rebuild", is_flag=True,
+              help="Build the aida-agent image from agent/Dockerfile instead of downloading it")
 def agent_run(assessment, prompt, yes, model, permission_mode, preprompt, resume,
-              new_session, recreate, rebuild):
+              new_session, recreate, pull, rebuild):
     """Start (or re-attach to) Claude Code inside ASSESSMENT's own container."""
     _check_agent_prerequisites()
     backend_url = os.getenv("BACKEND_API_URL", DEFAULT_BACKEND)
@@ -1543,10 +1673,10 @@ def agent_run(assessment, prompt, yes, model, permission_mode, preprompt, resume
     )
     host_path = translate_host_path(host_path)
 
-    ensure_agent_image(rebuild)
+    image = ensure_agent_image(rebuild=rebuild, pull=pull)
     network = ensure_agent_network(assessment_id)
     container = ensure_agent_container(
-        assessment_id, assessment_name, host_path, container_path, network, recreate
+        assessment_id, assessment_name, host_path, container_path, network, image, recreate
     )
 
     session_running = _docker_ok("exec", "-u", AGENT_USER, container,
@@ -1642,13 +1772,11 @@ def agent_rm(assessment, force):
 @agent_cli.command("ps")
 def agent_ps():
     """List agent containers."""
-    result = _docker("ps", "-a", "--filter", "label=aida.role=agent", "--format",
-                     '{{.Names}}\t{{.Label "aida.assessment.name"}}\t{{.Status}}')
     table = Table(box=box.SIMPLE)
     for col in ("Container", "Assessment", "Status"):
         table.add_column(col)
-    for line in result.stdout.splitlines():
-        table.add_row(*(line.split("\t") + ["", "", ""])[:3])
+    for row in _agent_containers('{{.Label "aida.assessment.name"}}\t{{.Status}}'):
+        table.add_row(*(row + ["", "", ""])[:3])
     console.print(table)
 
 

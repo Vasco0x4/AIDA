@@ -150,6 +150,8 @@ app.include_router(
 #   - feature flag (platform_settings.mcp_http_enabled)
 #   - network policy (localhost / lan / any)
 #   - bearer API key validation
+# Each API key gets its own MCP client context (loaded assessment, backend
+# token); agent keys are bound to their assessment. See mcp_http_app.py.
 # Streamable-HTTP uses POST for client→server messages, GET for the SSE
 # stream clients open to receive server-initiated events, and DELETE to
 # terminate the session.
@@ -159,7 +161,7 @@ app.include_router(
     include_in_schema=False,
 )
 async def mcp_endpoint(request: Request, api_key: ApiKey = Depends(verify_mcp_api_key)):
-    return await handle_mcp_request(request, api_key.owner_user_id, api_key.owner.username)
+    return await handle_mcp_request(request, api_key)
 
 
 @app.get("/")

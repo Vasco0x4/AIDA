@@ -75,10 +75,45 @@ async def _await_command_approval(mcp_service, *, command, phase, matched_keywor
     return ("timeout", None)
 
 
+def _pinned_assessment_refusal(name: str, arguments: dict, mcp_service) -> Optional[List[TextContent]]:
+    """Keep a client bound to one assessment (agent keys) on that assessment.
+
+    Every assessment-scoped tool uses ``current_assessment_id``, so it is
+    enough to stop the tools that change it (load / create) from pointing
+    it anywhere else, and to re-assert it on every call.
+    """
+    pinned_id = getattr(mcp_service, "pinned_assessment_id", None)
+    if pinned_id is None:
+        return None
+    pinned_name = mcp_service.pinned_assessment_name
+    mcp_service.current_assessment_id = pinned_id
+    mcp_service.current_assessment_name = pinned_name
+
+    if name == "create_assessment":
+        return [TextContent(
+            type="text",
+            text=(f"This agent is bound to assessment '{pinned_name}' and cannot create "
+                  "assessments. Create new assessments in the AIDA web UI."),
+        )]
+    if name == "load_assessment":
+        requested = str(arguments.get("name") or "").strip()
+        if requested.lower() != (pinned_name or "").strip().lower():
+            return [TextContent(
+                type="text",
+                text=(f"This agent is bound to assessment '{pinned_name}' (already loaded) "
+                      f"and cannot load '{requested}'. Use load_assessment(name=\"{pinned_name}\")."),
+            )]
+    return None
+
+
 async def handle_tool_call(name: str, arguments: dict, mcp_service) -> List[TextContent]:
     """Handle tool calls from Claude - Main dispatcher"""
     try:
         await mcp_service.initialize()
+
+        refusal = _pinned_assessment_refusal(name, arguments, mcp_service)
+        if refusal is not None:
+            return refusal
 
         # ========== Assessment Management ==========
 
@@ -181,6 +216,13 @@ async def _handle_load_assessment(arguments: dict, mcp_service) -> List[TextCont
         return [TextContent(
             type="text",
             text=f"Assessment '{assessment_name}' not found. USER must create it via the interface first."
+        )]
+
+    pinned_id = getattr(mcp_service, "pinned_assessment_id", None)
+    if pinned_id is not None and assessment["id"] != pinned_id:
+        return [TextContent(
+            type="text",
+            text=f"This agent is bound to assessment '{mcp_service.pinned_assessment_name}' and cannot load another one."
         )]
 
     # Set context
@@ -568,12 +610,24 @@ async def _handle_list_assessments(arguments: dict, mcp_service) -> List[TextCon
         limit = arguments.get("limit", 50)
         params["limit"] = limit
 
-        response = await mcp_service.http_client.get(
-            f"{mcp_service.backend_url}/assessments",
-            params=params
-        )
-        response.raise_for_status()
-        assessments = response.json()
+        pinned_id = getattr(mcp_service, "pinned_assessment_id", None)
+        if pinned_id is not None:
+            # Bound to one assessment: that's the only one this client sees.
+            response = await mcp_service.http_client.get(
+                f"{mcp_service.backend_url}/assessments/{pinned_id}"
+            )
+            response.raise_for_status()
+            assessments = [
+                a for a in [response.json()]
+                if not status_filter or a.get("status") == status_filter
+            ]
+        else:
+            response = await mcp_service.http_client.get(
+                f"{mcp_service.backend_url}/assessments",
+                params=params
+            )
+            response.raise_for_status()
+            assessments = response.json()
 
         if not assessments:
             filter_msg = f" with status '{status_filter}'" if status_filter else ""

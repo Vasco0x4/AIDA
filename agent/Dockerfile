@@ -4,6 +4,11 @@
 # sandbox instead of on the host. One container is created per assessment by
 # `aida run <assessment>` (see aida.py).
 #
+# Published as vasco0x4/aida-agent (amd64 + arm64) by
+# .github/workflows/docker-publish.yml, FROM the aida-pentest image of the
+# same version; `aida run` downloads it and only builds this file as a
+# fallback (or with --rebuild).
+#
 #   - Claude Code (npm) + Node.js
 #   - tmux: the Claude session survives detach / terminal close
 #   - non-root user `aida` with passwordless sudo (Claude Code refuses
@@ -49,6 +54,8 @@ RUN if ! getent group "${AIDA_GID}" >/dev/null; then groupadd -g "${AIDA_GID}" a
     && chmod 0440 /etc/sudoers.d/aida \
     && mkdir -p /home/aida/.claude /home/aida/.aida /workspace \
     && chown -R "aida:${AIDA_GID}" /home/aida /workspace
+# `aida run` reads these to tell whether the agent user matches yours (Linux).
+LABEL aida.uid="${AIDA_UID}" aida.gid="${AIDA_GID}"
 
 # nmap needs raw sockets for SYN/OS scans. The container is started with
 # --cap-add NET_ADMIN so every capability below is in its bounding set.

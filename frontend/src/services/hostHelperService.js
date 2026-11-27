@@ -43,20 +43,54 @@ export const isHostHelperAvailable = async () => {
 };
 
 /**
- * Launch aida.py for an assessment in a new terminal window on the host.
+ * Assessment names the helper accepts (same rule as ASSESSMENT_NAME_RE in
+ * tools/helper.py). For other names the UI only shows the command to copy.
+ */
+const LAUNCHABLE_NAME_RE = /^[A-Za-z0-9 _\-.]{1,128}$/;
+
+export const canLaunchOnHost = (assessmentName) => LAUNCHABLE_NAME_RE.test(assessmentName || '');
+
+/**
+ * Quote one shell argument for the commands shown to copy: "name" like in
+ * the docs, 'name' when double quotes wouldn't be literal.
+ * @param {string} value
+ * @returns {string}
+ */
+export const shellQuote = (value) => {
+    if (!/["\\$`!]/.test(value)) return `"${value}"`;
+    return `'${value.replace(/'/g, "'\\''")}'`;
+};
+
+/**
+ * Command each launch mode runs (what the helper opens a terminal with).
+ *   agent — Claude Code inside the assessment's own container (`aida run`)
+ *   cli   — an AI CLI installed on this machine (`aida --assessment`)
+ */
+export const launchCommand = (assessmentName, mode = 'agent') => (
+    mode === 'agent'
+        ? `aida run ${shellQuote(assessmentName)}`
+        : `aida --assessment ${shellQuote(assessmentName)}`
+);
+
+/**
+ * Open a terminal window on the host running `launchCommand(name, mode)`.
  * Throws if the helper is unreachable or returns a non-2xx status.
  *
  * @param {string} assessmentName
+ * @param {'agent'|'cli'} [mode='cli']
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export const launchAidaOnHost = async (assessmentName) => {
+export const launchAidaOnHost = async (assessmentName, mode = 'cli') => {
     const response = await axios.post(
         `${HELPER_URL}/launch`,
-        { assessment_name: assessmentName },
+        { assessment_name: assessmentName, mode },
         { timeout: 5000 },
     );
     return response.data;
 };
+
+/** Open a terminal running `aida run "<assessment>"` (sandboxed agent). */
+export const launchAgentOnHost = (assessmentName) => launchAidaOnHost(assessmentName, 'agent');
 
 // Backward-compat alias — old code still imports under the previous name
 export const isFolderOpenerAvailable = isHostHelperAvailable;
@@ -65,4 +99,7 @@ export default {
     openFolderOnHost,
     isHostHelperAvailable,
     launchAidaOnHost,
+    launchAgentOnHost,
+    canLaunchOnHost,
+    launchCommand,
 };

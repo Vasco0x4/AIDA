@@ -101,6 +101,9 @@ def _ensure_columns():
         "ALTER TABLE assessments ADD COLUMN IF NOT EXISTS methodology VARCHAR(50) DEFAULT 'standard'",
         "ALTER TABLE assessments ADD COLUMN IF NOT EXISTS asvs_level INTEGER",
         "ALTER TABLE assessments ADD COLUMN IF NOT EXISTS asvs_version VARCHAR(20)",
+        # Binds an MCP API key to one assessment (agent keys from `aida run`)
+        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS assessment_id INTEGER"
+        " REFERENCES assessments(id) ON DELETE CASCADE",
     ]
     try:
         with engine.begin() as conn:

@@ -76,13 +76,36 @@ class AidaMCPService:
             pass
         return "container"
 
-    def __init__(self, backend_url: str = None):
+    def __init__(
+        self,
+        backend_url: str = None,
+        token: Optional[str] = None,
+        pinned_assessment: Optional[Dict[str, Any]] = None,
+        container: Optional[str] = None,
+    ):
+        """
+        Over stdio there is one service per MCP client process. Over HTTP the
+        backend keeps one per API key (see mcp_http_app.py) and passes:
+
+        - ``token``: JWT of the key's owner, used for the backend REST calls
+          (otherwise read from AIDA_TOKEN or the launcher's .aida files).
+        - ``pinned_assessment``: ``{"id", "name"}`` for keys bound to one
+          assessment (agent keys). It is loaded from the start and the
+          handlers refuse to load, list or create any other.
+        - ``container``: execution target for the container-side helpers
+          (the assessment's agent container), instead of auto-detection.
+        """
         # Load backend URL from environment or use default
         import os
         self.backend_url = backend_url or os.getenv("BACKEND_API_URL", "http://localhost:8000/api")
-        self.token: Optional[str] = os.getenv("AIDA_TOKEN") or self._read_session_file()
+        self.token: Optional[str] = token or os.getenv("AIDA_TOKEN") or self._read_session_file()
+        self.pinned_assessment_id: Optional[int] = None
+        self.pinned_assessment_name: Optional[str] = None
         self.current_assessment_id: Optional[int] = None
         self.current_assessment_name: Optional[str] = None
+        if pinned_assessment:
+            self.pin_assessment(pinned_assessment["id"], pinned_assessment["name"])
+        self.container_override: Optional[str] = container
         self.http_client: Optional[httpx.AsyncClient] = None
 
         # Deployment mode: "container" (docker exec) or "localhost" (host
@@ -127,6 +150,13 @@ class AidaMCPService:
         if self.http_client:
             self.http_client.headers["Authorization"] = f"Bearer {token}"
 
+    def pin_assessment(self, assessment_id: int, name: str) -> None:
+        """Bind this client to one assessment, loaded from the start."""
+        self.pinned_assessment_id = assessment_id
+        self.pinned_assessment_name = name
+        self.current_assessment_id = assessment_id
+        self.current_assessment_name = name
+
     async def initialize(self):
         """Initialize HTTP client and auto-detect containers"""
         if not self.http_client:
@@ -136,7 +166,10 @@ class AidaMCPService:
             self.http_client = httpx.AsyncClient(timeout=120.0, headers=headers)
 
         if not self.is_initialized:
-            if self.deployment_mode == "localhost":
+            if self.container_override:
+                self.current_container = self.container_override
+                file_log.info(f"Target container: {self.container_override}")
+            elif self.deployment_mode == "localhost":
                 # Single-target mode — nothing to discover. Skip straight to
                 # the synthetic label so downstream calls have something to
                 # use in CommandHistory / UI filters.
@@ -470,7 +503,7 @@ class AidaMCPService:
             else:
                 result = await self._run_command([
                     "docker", "exec", self.current_container, "bash", "-c",
-                    f"source /root/.bashrc 2>/dev/null && which {tool_name}"
+                    f"source ~/.bashrc 2>/dev/null; which {tool_name}"
                 ])
 
             available = result["success"]
@@ -734,8 +767,10 @@ class AidaMCPService:
                 # the user's own shell init is already in effect.
                 result = await self._run_command(["bash", "-c", command])
             else:
-                # Properly source the environment before executing commands
-                wrapped_command = f"source /root/.bashrc 2>/dev/null && {command}"
+                # Source the environment first. ~ rather than /root and `;`
+                # rather than `&&`: agent containers run as a non-root user,
+                # for whom sourcing /root/.bashrc fails and skipped the command.
+                wrapped_command = f"source ~/.bashrc 2>/dev/null; {command}"
 
                 result = await self._run_command([
                     "docker", "exec", container_name, "bash", "-c", wrapped_command

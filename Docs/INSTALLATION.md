@@ -105,15 +105,19 @@ AIDA gives an AI agent its pentesting tools over [MCP](https://modelcontextproto
 
 | | Needs on your machine | |
 |---|---|---|
-| [**Agent containers**](#agent-containers-claude-code-inside-the-sandbox-preview) — `aida run` | Docker only | Claude Code runs inside the assessment's own container (preview) |
+| [**Agent containers**](#agent-containers-claude-code-inside-the-sandbox) — `aida run` (recommended) | Docker only | Claude Code runs inside the assessment's own container |
 | [**AI CLI on this machine**](#ai-cli-on-this-machine) — `aida --assessment` | Python 3.10+ and the AI CLI | Claude Code, OpenAI Codex, Kimi Code or Qwen Code |
 | [**Other MCP clients**](#other-mcp-clients) | the client | Claude Desktop, Gemini CLI, ChatGPT Desktop, Antigravity... |
 
 In every case, first create an assessment in the web UI.
 
-### Agent containers: Claude Code inside the sandbox (preview)
+### Agent containers: Claude Code inside the sandbox
 
 `aida run` gives each assessment its **own container** and runs **Claude Code inside it**. Claude's own Bash and file tools, and the AIDA `execute()` / `python_exec()` / `http_request()` tools, all run in the same sandbox: nothing executes on your host. Claude Code ships in the image, so there is nothing else to install.
+
+**From the web UI:** open the assessment and click **Launch agent** → **Open in terminal**. A terminal opens on the AIDA machine running `aida run "<assessment>"`. If the button isn't there (the UI is opened from another machine, or the AIDA helper isn't running), the menu shows the command to copy instead.
+
+**From a terminal:**
 
 ```bash
 aida run "target-corp"            # create/start the container, launch Claude, attach
@@ -125,26 +129,39 @@ aida stop "target-corp"           # stop (files and installed tools kept)
 aida rm "target-corp"             # remove container + network (workspace kept)
 ```
 
-Claude runs in a tmux session: **detach with `Ctrl-b d`** and it keeps working; `aida run` re-attaches. When Claude exits you land in a shell inside the container (`aida-claude` restarts it).
+Claude runs in a tmux session: **detach with `Ctrl-b d`** and it keeps working; `aida run` (or Launch agent) re-attaches. When Claude exits you land in a shell inside the container (`aida-claude` restarts it).
+
+**Several assessments at once.** Each agent only sees its own assessment, so you can run one per assessment side by side: `aida run "client-a"` in one terminal, `aida run "client-b"` in another. Findings, recon and commands always land in the right assessment.
 
 **What each assessment gets**
 
 | | |
 |--|--|
-| Container | `aida-agent-<id>`, image `aida-agent` (aida-pentest tools + Claude Code), non-root user `aida` with sudo |
+| Container | `aida-agent-<id>`, image `vasco0x4/aida-agent` (aida-pentest tools + Claude Code), non-root user `aida` with sudo |
 | Workspace | only this assessment's folder (`~/.aida/workspaces/<name>`), mounted at the same path as in `aida-pentest` |
 | Network | its own bridge `aida-agent-net-<id>`: internet access, the AIDA backend reachable as `aida-backend`, but no access to postgres, the docker proxy or other assessments |
-| MCP | HTTP transport with an `agent`-scoped API key (cached in `.aida/agents/<id>.key`) |
+| MCP | HTTP transport with an `agent` API key bound to this assessment (cached in `.aida/agents/<id>.key`): the agent can't load, list or create any other assessment |
 
 While an assessment's agent container is running, its `execute()` commands run there instead of the shared `aida-pentest` container.
 
 **Claude login.** The `aida-claude-config` volume holds Claude Code's login and settings, shared by all agent containers: log in once (the first `aida run` shows the login screen). Alternatively export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) before `aida run`; they're forwarded to Claude at launch and never stored in the container.
 
+**The agent image.** The first `aida run` downloads `vasco0x4/aida-agent` (amd64 and arm64; it shares most of its layers with `aida-pentest`, already on your machine). `aida start` / `aida update` keep it up to date once you have it, and it's republished weekly with the latest Claude Code.
+
+| | |
+|--|--|
+| `aida run X --pull` | download the latest image now (newer Claude Code) |
+| `aida run X --recreate` | recreate the container on the current image (workspace kept, tools you installed in the container are lost) |
+| `aida run X --new` | restart the Claude session, keep the container |
+| `aida run X --rebuild` | build the image from `agent/Dockerfile` instead of downloading it |
+
+If the image can't be downloaded (offline, a fork without published images), `aida run` builds `agent/Dockerfile` locally instead (a few minutes). On Linux, files the agent writes in the workspace are owned by you: if your user isn't `1000:1000`, `aida run` adds a small local layer that gives the agent user your UID/GID.
+
 **Notes**
 
-- The image is built locally on first run (`agent/Dockerfile`); `aida run X --rebuild` rebuilds it, e.g. to update Claude Code.
-- `agent`-scoped keys work even when HTTP MCP is disabled in Settings, and are accepted from private addresses only (`lan` policy): that's how the container reaches the backend.
-- The MCP server still keeps a single "loaded assessment" for all HTTP clients: don't run two agents in parallel yet.
+- `agent` keys work even when HTTP MCP is disabled in Settings, and are accepted from private addresses only (`lan` policy): that's how the container reaches the backend. `aida run` mints one per assessment and revokes the previous one; deleting the assessment deletes its keys.
+- An older agent key that isn't bound to an assessment is refused: `aida run "<assessment>" --new` replaces it.
+- Other HTTP MCP clients also get their own context per API key: give each client its own key (Settings → MCP Access).
 
 ### AI CLI on this machine
 

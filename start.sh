@@ -268,6 +268,14 @@ if [[ ${#to_pull[@]} -gt 0 ]]; then
         compose build "${to_build[@]}" \
             || die "Could not build ${to_build[*]}." "See the error above, or ask for help with the output of: aida doctor"
     fi
+    # Agent image (`aida run`): downloaded on the first `aida run`, then
+    # kept up to date here like the others.
+    agent_image="${AIDA_AGENT_IMAGE:-vasco0x4/aida-agent:${AIDA_VERSION:-latest}}"
+    if ! $DEV && [[ "${AIDA_BUILD:-}" != "1" && "$last_pull" != "$head_commit" ]] \
+        && docker image inspect "$agent_image" >/dev/null 2>&1; then
+        docker pull "$agent_image" \
+            || warn "Could not check for a newer $agent_image — using the one already here."
+    fi
     $DEV || echo "$head_commit" > .aida/last-pull
 fi
 

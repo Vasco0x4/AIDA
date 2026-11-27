@@ -36,6 +36,11 @@ Generates `.aida/mcp-config.json` pointing at the backend venv's Python. No netw
 4. Click **Create API key**, copy the value shown once.
 5. Paste the generated snippet into your MCP client's config. For Claude Code:
 
+Each API key gets its own MCP context on the server (the loaded assessment, the
+backend identity): give each client its own key, so loading an assessment in one
+client never changes another's. Keys created by `aida run` are additionally bound
+to one assessment.
+
 The endpoint is reachable at two URLs:
 
 | From | URL | Network policy |
