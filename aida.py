@@ -102,7 +102,7 @@ API_KEY_FILE = AIDA_CONFIG_DIR / "api-key"
 # MCP servers from .kimi-code/mcp.json in the working directory instead.
 KIMI_WORKSPACE_CONFIG_DIR = ".kimi-code"
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_PERMISSION = "default"
 DEFAULT_BACKEND = "http://localhost:8000/api"
 
