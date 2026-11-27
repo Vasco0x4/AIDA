@@ -1,6 +1,9 @@
 """
 Authentication API endpoints
 """
+import hmac
+import os
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -19,10 +22,51 @@ from models.user import User
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+# --- First-admin setup code ------------------------------------------------
+# The web UI is reachable from the LAN, so whoever loads it first could claim
+# the admin account. Creating it therefore needs a one-time code that only
+# the person who started AIDA has: start.sh generates it, passes it in
+# AIDA_SETUP_CODE and prints it. When the backend is started some other way,
+# it makes one up and prints it in its own logs.
+_SETUP_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
+_generated_setup_code: Optional[str] = None
+
+
+def get_setup_code() -> str:
+    global _generated_setup_code
+    configured = os.getenv("AIDA_SETUP_CODE", "").strip()
+    if configured:
+        return configured
+    if _generated_setup_code is None:
+        raw = "".join(secrets.choice(_SETUP_CODE_ALPHABET) for _ in range(8))
+        _generated_setup_code = f"{raw[:4]}-{raw[4:]}"
+    return _generated_setup_code
+
+
+def announce_setup_code(db: Session) -> None:
+    """Print the setup code at startup while no account exists yet."""
+    if db.query(User).count() == 0:
+        print(f"[setup] No admin account yet. Setup code: {get_setup_code()}", flush=True)
+
+
+def _normalize_setup_code(code: str) -> bytes:
+    # Accept "abcd efgh", "ABCD-EFGH", ... — only letters and digits count.
+    return "".join(ch for ch in code.upper() if ch.isalnum()).encode()
+
+
+def _setup_code_matches(candidate: Optional[str]) -> bool:
+    if not candidate:
+        return False
+    return hmac.compare_digest(
+        _normalize_setup_code(candidate), _normalize_setup_code(get_setup_code())
+    )
+
+
 class SetupRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=7)
     email: Optional[str] = None
+    setup_code: Optional[str] = Field(None, max_length=64)
 
 
 @router.get("/setup-status")
@@ -32,7 +76,11 @@ def setup_status(db: Session = Depends(get_db)):
     Used by the frontend on first paint to decide between the setup wizard
     and the regular login screen.
     """
-    return {"setup_required": db.query(User).count() == 0}
+    return {
+        "setup_required": db.query(User).count() == 0,
+        # Lets the wizard show the code field (older backends didn't need one).
+        "setup_code_required": True,
+    }
 
 
 @router.post("/setup", response_model=TokenResponse)
@@ -48,6 +96,11 @@ def setup(request: Request, data: SetupRequest, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Setup already completed",
+        )
+    if not _setup_code_matches(data.setup_code):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Wrong setup code. It was printed when AIDA started — run `aida status` to see it again.",
         )
 
     admin = User(

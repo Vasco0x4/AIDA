@@ -13,10 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from auth import get_current_user, require_admin, verify_mcp_api_key
 from config import settings
-from database import init_db
+from database import SessionLocal, init_db
 from api import assessments, cards, recon, sections, containers, folders, global_commands, search, system, credentials, websocket, workspace, pending_commands, context_documents, source_code, auth, reports, timeline, notifications, templates, users, api_keys, asvs_requirements
 from api import commands
 from api.commands import global_router as commands_global_router
+from api.auth import announce_setup_code
 from mcp_http_app import handle_mcp_request, mcp_lifespan
 from models.api_key import ApiKey
 from utils.logger import setup_logging, get_logger
@@ -42,6 +43,11 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifecycle: run migrations, start MCP session manager, yield."""
     init_db()
+    try:
+        with SessionLocal() as db:
+            announce_setup_code(db)
+    except Exception as exc:  # never block startup on this
+        logger.warning("Could not check whether setup is needed", error=str(exc))
     logger.info(
         "Application started",
         project=settings.PROJECT_NAME,
@@ -62,7 +68,7 @@ async def lifespan(app: FastAPI):
 
 # Disable the interactive API docs (Swagger UI, ReDoc and the OpenAPI schema)
 # outside of development so the full API surface is not exposed publicly when
-# the backend is reachable through the reverse proxy (e.g. ``--domain`` mode).
+# the backend is reachable through the reverse proxy (Caddy on port 31337).
 # DEBUG=true can force them back on for troubleshooting a production build.
 _docs_enabled = settings.ENVIRONMENT != "production" or settings.DEBUG
 

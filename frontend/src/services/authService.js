@@ -38,12 +38,13 @@ export async function login(username, password) {
 
 export async function fetchSetupStatus() {
   const res = await apiClient.get('/auth/setup-status');
-  return res.data; // { setup_required: bool }
+  return res.data; // { setup_required: bool, setup_code_required?: bool }
 }
 
-export async function setupAdmin(username, password, email) {
+export async function setupAdmin(username, password, email, setupCode) {
   const body = { username, password };
   if (email) body.email = email;
+  if (setupCode) body.setup_code = setupCode;
   const res = await apiClient.post('/auth/setup', body);
   const { access_token, user } = res.data;
   storeAuth(access_token, user);

@@ -1,0 +1,39 @@
+# Contributor mode — loaded on top of docker-compose.yml by `aida start --dev`.
+#
+#   http://localhost:5173   Vite dev server with hot reload
+#   http://localhost:8000   backend with --reload, running the local source
+#
+# Images get their own local tags so a dev build never shadows the Docker Hub
+# images that `aida start` uses.
+
+services:
+  backend:
+    image: aida-backend:dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      ENVIRONMENT: development
+    volumes:
+      # :z keeps SELinux hosts (RHEL/Fedora) happy.
+      - ./backend:/app:z
+      - /app/venv
+
+  frontend:
+    image: aida-frontend:dev
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_URL: http://localhost:8000/api
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ./frontend:/app:z
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5173"]
+
+  # No HTTPS front door in dev: the UI is Vite on port 5173.
+  caddy:
+    profiles: ["prod"]

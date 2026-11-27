@@ -63,6 +63,10 @@ stop-legacy.sh
 /.aida/deployment-mode
 /.aida/agents/
 /.aida/test-admin
+/.aida/setup-code
+/.aida/last-pull
+/.aida/port
+/.aida/aida-local-ca.crt
 
 # CLI venv (top-level) — created by start.sh for MCP/host-agent
 /.venv/
@@ -77,5 +81,5 @@ switch-db.sh
 # Claude Code internal files
 .claude/
 
-# TLS — Caddyfile generated dynamically by start.sh in --lan / --domain mode
+# Left behind by the old --lan / --domain modes (start.sh removes it)
 /.aida/Caddyfile

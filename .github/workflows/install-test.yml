@@ -1,0 +1,84 @@
+name: Install test
+
+# Runs the real installer on a fresh Ubuntu machine and checks that a new user
+# gets a working web UI, so the one-command install can't silently break.
+
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'start.sh'
+      - 'stop.sh'
+      - 'restart.sh'
+      - 'aida'
+      - 'scripts/**'
+      - 'caddy/**'
+      - 'docker-compose*.yml'
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/install-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'start.sh'
+      - 'stop.sh'
+      - 'restart.sh'
+      - 'aida'
+      - 'scripts/**'
+      - 'caddy/**'
+      - 'docker-compose*.yml'
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/install-test.yml'
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install from this checkout; build backend + frontend from this
+      # commit's source (the Docker Hub images may not have it yet).
+      - name: Run the installer
+        env:
+          AIDA_DIR: ${{ github.workspace }}
+          AIDA_BUILD: "1"
+        run: bash install.sh
+
+      - name: Web UI is served over HTTPS
+        run: curl -fsSk https://localhost:31337/ | grep -q 'id="root"'
+
+      - name: Plain HTTP redirects to HTTPS
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:31337/)
+          echo "HTTP status: $code"
+          [[ "$code" =~ ^30[1278]$ ]]
+
+      - name: API works through the web UI port
+        run: curl -fsSk https://localhost:31337/api/auth/setup-status | grep -q '"setup_required":true'
+
+      - name: First admin needs the setup code
+        run: |
+          body='{"username":"admin","password":"ci-password"}'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+            -d "$body" http://127.0.0.1:8000/api/auth/setup)
+          echo "Without code: $code"
+          [[ "$code" == 403 ]]
+          setup_code=$(cat .aida/setup-code)
+          curl -fsS -H 'Content-Type: application/json' \
+            -d "{\"username\":\"admin\",\"password\":\"ci-password\",\"setup_code\":\"$setup_code\"}" \
+            http://127.0.0.1:8000/api/auth/setup > /dev/null
+          curl -fsS http://127.0.0.1:8000/api/auth/setup-status | grep -q '"setup_required":false'
+
+      - name: aida doctor is happy
+        run: ./aida doctor
+
+      - name: aida stop
+        run: ./aida stop
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=200

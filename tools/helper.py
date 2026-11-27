@@ -19,8 +19,8 @@ to processes on the same machine. The realistic threats are:
 Defenses applied:
 
   - Strict Origin allowlist — every request must carry an Origin header
-    pointing at the AIDA frontend (http://localhost:5173 or
-    http://127.0.0.1:5173). Browsers always send accurate Origin headers
+    pointing at the AIDA frontend (https://localhost:31337 or the Vite dev
+    server on port 5173). Browsers always send accurate Origin headers
     on cross-origin XHR/fetch, so a website at https://evil.com cannot
     forge it. The CORS response echoes the validated origin (never *).
   - Path allowlist on /open — only directories under AIDA_ROOT or
@@ -36,6 +36,7 @@ Defenses applied:
 """
 import http.server
 import json
+import os
 import platform
 import re
 import shlex
@@ -53,7 +54,12 @@ WORKSPACE_ROOTS = [
     Path.home() / ".aida" / "workspaces",
 ]
 
+_UI_PORT = os.environ.get("AIDA_PORT", "31337")
 ALLOWED_ORIGINS = {
+    # Web UI served by Caddy (aida start)
+    f"https://localhost:{_UI_PORT}",
+    f"https://127.0.0.1:{_UI_PORT}",
+    # Vite dev server (aida start --dev)
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 }

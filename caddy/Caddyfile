@@ -1,0 +1,30 @@
+# AIDA web UI: HTTPS on a single port with a self-signed certificate.
+#
+# Caddy's internal CA issues a certificate on the fly for whatever name or IP
+# the browser uses (localhost, 192.168.1.20, my-laptop.local, ...), so the
+# same URL works on this machine and from the rest of the LAN. Plain http://
+# requests on the same port are redirected to https://.
+#
+# `aida trust` installs the CA certificate on this machine to get rid of the
+# browser warning.
+{
+	admin off
+	# Only one port is published, so there is no :80 listener to redirect from.
+	auto_https disable_redirects
+	# The CA lives in the caddy_data volume; don't try to add it to the
+	# container's own trust store.
+	skip_install_trust
+	servers {
+		listener_wrappers {
+			http_redirect
+			tls
+		}
+	}
+}
+
+:{$AIDA_PORT:31337} {
+	tls internal {
+		on_demand
+	}
+	reverse_proxy frontend:80
+}
