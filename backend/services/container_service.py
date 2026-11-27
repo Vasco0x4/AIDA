@@ -220,10 +220,13 @@ class ContainerService:
 
     # ========== Active target resolution ==========
 
-    async def _resolve_active_container(self, db: AsyncSession) -> str:
+    async def _resolve_active_container(
+        self, db: AsyncSession, assessment_id: Optional[int] = None
+    ) -> str:
         """Pick the execution target for this request.
 
         Container mode:
+          0. The assessment's own agent container (`aida run`), if running.
           1. PlatformSettings.container_name (UI override).
           2. settings.DEFAULT_CONTAINER_NAME.
           3. First running container matching CONTAINER_PREFIX_FILTER.
@@ -232,6 +235,17 @@ class ContainerService:
         """
         if settings.DEPLOYMENT_MODE == "localhost":
             return settings.LOCALHOST_CONTAINER_LABEL
+
+        if assessment_id is not None:
+            agent_container = f"{settings.AGENT_CONTAINER_PREFIX}{assessment_id}"
+            # Bypass the discovery cache: the container may have been
+            # created seconds ago by `aida run`.
+            containers = await self.discover_containers(force_refresh=True)
+            if any(
+                c["name"] == agent_container and c["status"] == "running"
+                for c in containers
+            ):
+                return agent_container
 
         stmt = select(PlatformSettings).filter(PlatformSettings.key == "container_name")
         result = await db.execute(stmt)
@@ -368,7 +382,7 @@ class ContainerService:
         """Execute a shell command, log it to CommandHistory, broadcast result."""
         timeout = await self._resolve_timeout(db, timeout)
 
-        self.current_container = await self._resolve_active_container(db)
+        self.current_container = await self._resolve_active_container(db, assessment_id)
         backend = self._get_backend()
 
         stmt = select(Assessment).filter(Assessment.id == assessment_id)
@@ -466,7 +480,7 @@ class ContainerService:
         """
         timeout = await self._resolve_timeout(db, timeout)
 
-        self.current_container = await self._resolve_active_container(db)
+        self.current_container = await self._resolve_active_container(db, assessment_id)
         backend = self._get_backend()
 
         stmt = select(Assessment).filter(Assessment.id == assessment_id)
@@ -648,7 +662,7 @@ except Exception as _e:
         """
         timeout = await self._resolve_timeout(db, timeout)
 
-        self.current_container = await self._resolve_active_container(db)
+        self.current_container = await self._resolve_active_container(db, assessment_id)
         backend = self._get_backend()
 
         stmt = select(Assessment).filter(Assessment.id == assessment_id)

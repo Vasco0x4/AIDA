@@ -123,7 +123,12 @@ python3 aida.py --assessment "target-corp" --cli codex
 
 # No confirmation prompts
 python3 aida.py --assessment "target-corp" --yes
+
+# Preview: one container per assessment, Claude Code runs inside it
+./aida run "target-corp"
 ```
+
+> `./aida run` needs only Docker on the host — see [Agent Containers](Docs/INSTALLATION.md#agent-containers--claude-code-inside-the-sandbox-preview).
 
 ### Define Your Scope
 

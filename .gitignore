@@ -61,6 +61,8 @@ stop-legacy.sh
 /.aida/session
 /.aida/api-key
 /.aida/deployment-mode
+/.aida/agents/
+/.aida/test-admin
 
 # CLI venv (top-level) — created by start.sh for MCP/host-agent
 /.venv/

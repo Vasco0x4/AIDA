@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Thin wrapper so `./aida run <assessment>` works without typing python3.
+# Symlink it into your PATH (e.g. ln -s "$PWD/aida" ~/.local/bin/aida).
+SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+ROOT=$(dirname "$SELF")
+# Prefer the launcher venv (created by aida.py on first run) to skip the
+# dependency check on every invocation.
+PY=python3
+[ -x "$ROOT/.venv/bin/python" ] && PY="$ROOT/.venv/bin/python"
+exec "$PY" "$ROOT/aida.py" "$@"

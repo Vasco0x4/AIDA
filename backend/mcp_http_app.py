@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -34,6 +35,7 @@ for _p in (str(_MODULES_DIR), str(_MCP_DIR)):
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager  # noqa: E402
 from starlette.responses import Response  # noqa: E402
 
+from auth import create_access_token  # noqa: E402
 from mcp_classes import AidaMCPService  # noqa: E402
 from server_builder import build_mcp_server  # noqa: E402
 
@@ -53,6 +55,9 @@ class _AlreadySentResponse(Response):
 
 _mcp_service: AidaMCPService | None = None
 _session_manager: StreamableHTTPSessionManager | None = None
+# (user_id, minted_at) of the JWT currently set on the MCP service.
+_service_identity: tuple[int, float] | None = None
+_TOKEN_REFRESH_SECONDS = 3600
 
 
 def get_session_manager() -> StreamableHTTPSessionManager:
@@ -96,12 +101,35 @@ async def mcp_lifespan() -> AsyncIterator[None]:
         await _mcp_service.cleanup()
 
 
-async def handle_mcp_request(request: Request) -> Response:
+def _act_as(user_id: int, username: str) -> None:
+    """Make the MCP service's backend REST calls run as the API key's owner.
+
+    The tool handlers call the backend's own REST API. Over stdio they read
+    the launcher's .aida/api-key, which doesn't exist inside the backend
+    container, so over HTTP every call failed with 401. Mint a regular JWT
+    for the key owner instead, re-minted hourly (it lives 24h).
+    """
+    global _service_identity
+    if _mcp_service is None:
+        return
+    now = time.monotonic()
+    if (
+        _service_identity
+        and _service_identity[0] == user_id
+        and now - _service_identity[1] < _TOKEN_REFRESH_SECONDS
+    ):
+        return
+    _mcp_service.set_token(create_access_token(user_id, username))
+    _service_identity = (user_id, now)
+
+
+async def handle_mcp_request(request: Request, user_id: int, username: str) -> Response:
     """Forward the request to the session manager and return a no-op Response.
 
     The session manager uses the raw ASGI ``send`` callable to emit its own
     response, so we return a sentinel that suppresses Starlette's own send.
     """
+    _act_as(user_id, username)
     manager = get_session_manager()
     await manager.handle_request(request.scope, request.receive, request._send)
     return _AlreadySentResponse()

@@ -259,6 +259,46 @@ For non-interactive use (CI, scripts), set `AIDA_TOKEN` in the environment to by
 
 ---
 
+## Agent Containers — Claude Code inside the sandbox (preview)
+
+`./aida run` gives each assessment its **own container** and runs **Claude Code inside it**. Claude's own Bash and file tools, and the AIDA `execute()` / `python_exec()` / `http_request()` tools, all run in the same sandbox — nothing executes on your host. Nothing to install on the host besides Docker: Claude Code ships in the image.
+
+```bash
+./aida run "target-corp"            # create/start the container, launch Claude, attach
+./aida run "target-corp" --yes      # no permission prompts (Claude is sandboxed)
+./aida run "target-corp" --continue # resume the last conversation
+./aida shell "target-corp"          # shell in the same container
+./aida ps                           # list agent containers
+./aida stop "target-corp"           # stop (files and installed tools kept)
+./aida rm "target-corp"             # remove container + network (workspace kept)
+```
+
+Claude runs in a tmux session: **detach with `Ctrl-b d`**, it keeps working; `./aida run` re-attaches. When Claude exits you land in a shell inside the container (`aida-claude` restarts it).
+
+### What each assessment gets
+
+| | |
+|--|--|
+| Container | `aida-agent-<id>`, image `aida-agent` (aida-pentest tools + Claude Code), non-root user `aida` with sudo |
+| Workspace | only this assessment's folder (`~/.aida/workspaces/<name>`), mounted at the same path as in `aida-pentest` |
+| Network | its own bridge `aida-agent-net-<id>`: internet access, the AIDA backend reachable as `aida-backend`, but no access to postgres, the docker proxy or other assessments |
+| MCP | HTTP transport with an `agent`-scoped API key (cached in `.aida/agents/<id>.key`) |
+
+While an assessment's agent container is running, its `execute()` commands run there instead of the shared `aida-pentest` container.
+
+### Claude login
+
+The `aida-claude-config` volume holds Claude Code's login and settings, shared by all agent containers — log in once (the first `./aida run` shows the login screen). Alternatively export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) before `./aida run`; they're forwarded to Claude at launch and never stored in the container.
+
+### Notes
+
+- The image is built locally on first run (`agent/Dockerfile`); `./aida run X --rebuild` rebuilds it, e.g. to update Claude Code.
+- `agent`-scoped keys work even when HTTP MCP is disabled in Settings, and are accepted from private addresses only (`lan` policy) — that's how the container reaches the backend.
+- The MCP server still keeps a single "loaded assessment" for all HTTP clients: don't run two agents in parallel yet.
+- Requires container mode (not available with `./start.sh --localhost`).
+
+---
+
 ## Claude Code
 
 **Claude Code is recommended** because the AIDA CLI does everything for you.

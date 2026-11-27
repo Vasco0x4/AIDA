@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Comma-separated list of accepted container name prefixes.
     # Both aida- (new) and exegol- (legacy) are accepted for backward compat.
     CONTAINER_PREFIX_FILTER: str = "aida-,exegol-"
+    # Per-assessment agent containers created by `aida run` are named
+    # f"{AGENT_CONTAINER_PREFIX}{assessment_id}". When one is running, the
+    # assessment's commands execute there instead of the shared container.
+    AGENT_CONTAINER_PREFIX: str = "aida-agent-"
     COMMAND_TIMEOUT: int = 300  # seconds (5 minutes default)
 
     # Deployment mode — "container" (default, exec in aida-pentest via docker)

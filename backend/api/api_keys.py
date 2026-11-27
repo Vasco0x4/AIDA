@@ -6,7 +6,7 @@ via ``?owner_user_id=`` — enforced inline rather than via a separate
 admin router so ownership logic stays co-located with the resource.
 """
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -22,6 +22,9 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 class ApiKeyCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
+    # "agent" keys are minted by `aida run` for per-assessment agent
+    # containers; see verify_mcp_api_key for how they're gated.
+    scope: Literal["mcp", "agent"] = "mcp"
 
 
 class ApiKeySummary(BaseModel):
@@ -90,7 +93,7 @@ def create_api_key(
         key_prefix=prefix,
         key_hash=hashed,
         owner_user_id=current_user.id,
-        scope="mcp",
+        scope=payload.scope,
     )
     db.add(row)
     db.commit()

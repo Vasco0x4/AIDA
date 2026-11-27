@@ -18,6 +18,7 @@ from api import assessments, cards, recon, sections, containers, folders, global
 from api import commands
 from api.commands import global_router as commands_global_router
 from mcp_http_app import handle_mcp_request, mcp_lifespan
+from models.api_key import ApiKey
 from utils.logger import setup_logging, get_logger
 from middleware.logging_middleware import LoggingMiddleware
 from middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -149,11 +150,10 @@ app.include_router(
 @app.api_route(
     "/mcp",
     methods=["GET", "POST", "DELETE"],
-    dependencies=[Depends(verify_mcp_api_key)],
     include_in_schema=False,
 )
-async def mcp_endpoint(request: Request):
-    return await handle_mcp_request(request)
+async def mcp_endpoint(request: Request, api_key: ApiKey = Depends(verify_mcp_api_key)):
+    return await handle_mcp_request(request, api_key.owner_user_id, api_key.owner.username)
 
 
 @app.get("/")
