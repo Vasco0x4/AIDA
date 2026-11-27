@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from auth import generate_api_key, get_current_user
 from database import get_db
 from models.api_key import ApiKey
+from models.assessment import Assessment
 from models.user import User
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
@@ -25,6 +26,15 @@ class ApiKeyCreateRequest(BaseModel):
     # "agent" keys are minted by `aida run` for per-assessment agent
     # containers; see verify_mcp_api_key for how they're gated.
     scope: Literal["mcp", "agent"] = "mcp"
+    # Binds the key to one assessment: its MCP client can't load, list or
+    # touch any other. Required for agent keys.
+    assessment_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _agent_keys_are_bound(self):
+        if self.scope == "agent" and self.assessment_id is None:
+            raise ValueError("agent keys need an assessment_id")
+        return self
 
 
 class ApiKeySummary(BaseModel):
@@ -33,6 +43,7 @@ class ApiKeySummary(BaseModel):
     key_prefix: str
     owner_user_id: int
     scope: str
+    assessment_id: Optional[int] = None
     created_at: Optional[datetime]
     last_used_at: Optional[datetime]
     revoked_at: Optional[datetime]
@@ -52,6 +63,7 @@ def _to_summary(key: ApiKey) -> ApiKeySummary:
         key_prefix=key.key_prefix,
         owner_user_id=key.owner_user_id,
         scope=key.scope,
+        assessment_id=key.assessment_id,
         created_at=key.created_at,
         last_used_at=key.last_used_at,
         revoked_at=key.revoked_at,
@@ -87,6 +99,13 @@ def create_api_key(
     db: Session = Depends(get_db),
 ):
     """Mint a new key owned by the current user. Returns the plaintext once."""
+    if payload.assessment_id is not None and (
+        db.query(Assessment.id).filter(Assessment.id == payload.assessment_id).first() is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Assessment not found",
+        )
     full, prefix, hashed = generate_api_key()
     row = ApiKey(
         name=payload.name.strip(),
@@ -94,6 +113,7 @@ def create_api_key(
         key_hash=hashed,
         owner_user_id=current_user.id,
         scope=payload.scope,
+        assessment_id=payload.assessment_id,
     )
     db.add(row)
     db.commit()

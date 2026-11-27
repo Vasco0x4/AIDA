@@ -3,9 +3,12 @@
 AIDA Host Helper — small local HTTP helper running on the host (not Docker).
 
 Provides three actions to the AIDA frontend:
-  POST /open    {path}              → open a folder in the host file explorer
-  POST /launch  {assessment_name}   → launch aida.py in a new terminal window
-  GET  /status                      → liveness check (no system info)
+  POST /open    {path}                    → open a folder in the host file explorer
+  POST /launch  {assessment_name, mode}   → open a terminal running, for mode
+                                            "agent": aida run <name> (Claude Code
+                                            in the assessment's container), for
+                                            "cli" (default): aida --assessment <name>
+  GET  /status                            → liveness check (no system info)
 
 Security model
 --------------
@@ -28,6 +31,9 @@ Defenses applied:
     enumerate the user's home directory.
   - Strict regex on assessment_name — alphanumerics, spaces, dashes,
     underscores, dots only. Defense in depth on top of shlex quoting.
+    The UI shows the command to copy for names it rejects.
+  - mode picks one of two fixed command lines; nothing else from the
+    request reaches the shell.
   - shlex.quote on every shell argument and proper AppleScript escaping
     so quoting can never let attacker-controlled strings break out.
   - subprocess.run(check=True) for AppleScript so a broken script returns
@@ -67,6 +73,12 @@ ALLOWED_ORIGINS = {
 # Conservative — matches assessment names that the backend already accepts.
 ASSESSMENT_NAME_RE = re.compile(r"^[A-Za-z0-9 _\-.]{1,128}$")
 
+# What /launch can run, by mode: argv after the `aida` command.
+LAUNCH_MODES = {
+    "agent": lambda name: ["run", name],            # Claude Code in the assessment's container
+    "cli": lambda name: ["--assessment", name],     # AI CLI installed on this machine
+}
+
 
 def _origin_ok(headers) -> Optional[str]:
     """Return the validated origin or None if it should be rejected."""
@@ -87,6 +99,19 @@ def _path_under_allowed_root(path: Path) -> bool:
         except (ValueError, OSError):
             continue
     return False
+
+
+def build_launch_command(assessment_name: str, mode: str) -> Optional[str]:
+    """Shell command the new terminal runs, or None if `aida` is missing.
+
+    Callers validate ``assessment_name`` (ASSESSMENT_NAME_RE) and ``mode``
+    (LAUNCH_MODES) first; every argument is shlex-quoted on top of that.
+    """
+    aida = AIDA_ROOT / "aida"
+    if not aida.exists():
+        return None
+    argv = [str(aida), *LAUNCH_MODES[mode](assessment_name)]
+    return f"cd {shlex.quote(str(AIDA_ROOT))} && " + " ".join(shlex.quote(a) for a in argv)
 
 
 class HelperHandler(http.server.BaseHTTPRequestHandler):
@@ -139,6 +164,11 @@ class HelperHandler(http.server.BaseHTTPRequestHandler):
         # Every state-changing endpoint requires a valid Origin
         origin = _origin_ok(self.headers)
         if not origin:
+            # Drain the (small) body first, so the client reads the 403
+            # instead of a connection reset.
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if 0 < length <= 65536:
+                self.rfile.read(length)
             self.send_json(HTTPStatus.FORBIDDEN, {"error": "Origin not allowed"})
             return
 
@@ -152,8 +182,10 @@ class HelperHandler(http.server.BaseHTTPRequestHandler):
     # ---------- handlers ----------
 
     def _handle_status(self):
-        # Liveness only — no OS, no terminal name, no path
-        self.send_json(HTTPStatus.OK, {"ok": True})
+        # Liveness only — no OS, no terminal name, no path. The CORS header
+        # (allowed origins only) lets the UI read it: without it the browser
+        # hid the answer and the UI always thought the helper was down.
+        self.send_json(HTTPStatus.OK, {"ok": True}, origin=_origin_ok(self.headers))
 
     def _handle_open(self, origin: str):
         """Open a folder in the host file explorer (path must be under AIDA root)."""
@@ -196,34 +228,30 @@ class HelperHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(e)}, origin=origin)
 
     def _handle_launch(self, origin: str):
-        """Launch aida.py in a new terminal window."""
+        """Open a new terminal window running `aida run` or `aida --assessment`."""
         body = self._read_body()
         assessment_name = body.get("assessment_name", "")
+        mode = body.get("mode", "cli")
 
-        if not assessment_name or not ASSESSMENT_NAME_RE.match(assessment_name):
+        if not isinstance(assessment_name, str) or not ASSESSMENT_NAME_RE.fullmatch(assessment_name):
             self.send_json(
                 HTTPStatus.BAD_REQUEST,
                 {"error": "Invalid assessment_name (allowed: A-Z, a-z, 0-9, space, _, -, .)"},
                 origin=origin,
             )
             return
-
-        aida_py = AIDA_ROOT / "aida.py"
-        if not aida_py.exists():
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "aida.py not found"}, origin=origin)
+        if not isinstance(mode, str) or mode not in LAUNCH_MODES:
+            self.send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"Invalid mode (allowed: {', '.join(LAUNCH_MODES)})"},
+                origin=origin,
+            )
             return
 
-        # Build the shell command — every arg shlex-quoted, defense in depth
-        # on top of the regex above.
-        venv_python = AIDA_ROOT / ".venv" / "bin" / "python"
-        python_bin = str(venv_python) if venv_python.exists() else "python3"
-        shell_cmd = " ".join([
-            shlex.quote(python_bin),
-            shlex.quote(str(aida_py)),
-            "-a",
-            shlex.quote(assessment_name),
-        ])
-        full_cmd = f"cd {shlex.quote(str(AIDA_ROOT))} && {shell_cmd}"
+        full_cmd = build_launch_command(assessment_name, mode)
+        if full_cmd is None:
+            self.send_json(HTTPStatus.NOT_FOUND, {"error": "aida command not found"}, origin=origin)
+            return
 
         os_name = platform.system()
         try:
@@ -256,10 +284,10 @@ class HelperHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Unsupported OS"}, origin=origin)
                 return
 
-            print(f"✓ Launched: {assessment_name}")
+            print(f"✓ Launched ({mode}): {assessment_name}")
             self.send_json(
                 HTTPStatus.OK,
-                {"success": True, "assessment_name": assessment_name},
+                {"success": True, "assessment_name": assessment_name, "mode": mode},
                 origin=origin,
             )
         except Exception as e:

@@ -4,11 +4,16 @@
 # sandbox instead of on the host. One container is created per assessment by
 # `aida run <assessment>` (see aida.py).
 #
+# Published as vasco0x4/aida-agent (amd64 + arm64) by
+# .github/workflows/docker-publish.yml, FROM the aida-pentest image of the
+# same version; `aida run` downloads it and only builds this file as a
+# fallback (or with --rebuild).
+#
 #   - Claude Code (npm) + Node.js
 #   - tmux: the Claude session survives detach / terminal close
-#   - non-root user `aida` with passwordless sudo (Claude Code refuses
-#     --dangerously-skip-permissions as root; the agent can still apt install)
-#   - nmap gets raw-socket capabilities so SYN scans work without sudo
+#   - non-root user `aida`, without sudo or any setuid binary: the agent
+#     can't become root or change the system (`pip install --user` works)
+#   - nmap gets the raw-socket capability, so SYN/OS scans work as `aida`
 # =============================================================================
 ARG BASE_IMAGE=vasco0x4/aida-pentest:latest
 FROM ${BASE_IMAGE}
@@ -26,7 +31,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 1. Node.js + agent tooling
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        tmux sudo procps libcap2-bin ncurses-term \
+        tmux procps libcap2-bin ncurses-term \
     && curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -45,15 +50,20 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # through on Linux) — reuse it rather than failing.
 RUN if ! getent group "${AIDA_GID}" >/dev/null; then groupadd -g "${AIDA_GID}" aida; fi \
     && useradd -m -u "${AIDA_UID}" -g "${AIDA_GID}" -s /bin/bash aida \
-    && echo 'aida ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/aida \
-    && chmod 0440 /etc/sudoers.d/aida \
     && mkdir -p /home/aida/.claude /home/aida/.aida /workspace \
     && chown -R "aida:${AIDA_GID}" /home/aida /workspace
+# `aida run` reads these to tell whether the agent user matches yours (Linux).
+LABEL aida.uid="${AIDA_UID}" aida.gid="${AIDA_GID}"
 
-# nmap needs raw sockets for SYN/OS scans. The container is started with
-# --cap-add NET_ADMIN so every capability below is in its bounding set.
-RUN setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip "$(command -v nmap)"
+# nmap needs raw sockets for SYN/OS scans. `aida run` starts the container
+# with --cap-drop ALL --cap-add NET_RAW, so NET_RAW is the only capability
+# a file can grant here (any user may already bind ports < 1024 in a
+# container). This is also why the container doesn't use no-new-privileges:
+# it makes the kernel ignore file capabilities, and SYN scans then fail.
+RUN setcap cap_net_raw+eip "$(command -v nmap)"
 ENV NMAP_PRIVILEGED=1
+# Tools installed with `pip install --user` (there is no sudo).
+ENV PATH=${PATH}:/home/aida/.local/bin
 
 # -----------------------------------------------------------------------------
 # 4. Launcher + tmux config
@@ -63,11 +73,22 @@ COPY tmux.conf /etc/tmux.conf
 RUN chmod 0755 /usr/local/bin/aida-claude
 
 # Claude Code keeps credentials, settings and .claude.json under this dir.
-# `aida run` mounts the shared `aida-claude-config` volume here, so you log in
-# once for every assessment container.
+# `aida run` mounts a volume of the assessment's own here
+# (aida-agent-claude-<id>): logins, settings and conversations are never
+# shared between assessments.
 ENV CLAUDE_CONFIG_DIR=/home/aida/.claude
 ENV DISABLE_AUTOUPDATER=1
 ENV TERM=xterm-256color
+
+# -----------------------------------------------------------------------------
+# 5. Lock down: no setuid/setgid binaries (su, passwd, mount...), so nothing
+#    in the container can switch to root. With --cap-drop ALL --cap-add
+#    NET_RAW, no process here, root included, holds more than NET_RAW.
+# -----------------------------------------------------------------------------
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
+# `aida run` checks this to refuse images made for older, looser settings
+# (sudo, nmap needing NET_ADMIN). Bump it with AGENT_SANDBOX_VERSION in aida.py.
+LABEL aida.sandbox="2"
 
 USER aida
 WORKDIR /workspace

@@ -10,6 +10,9 @@ Storage rules:
 - A short human-readable prefix is kept for UI display (``key_prefix``).
 - The full key is shown to the user exactly once at creation time.
 - Revocation is soft (``revoked_at``) so the audit trail survives.
+- ``assessment_id`` binds a key to one assessment: its MCP client only
+  sees that assessment. Required for "agent" keys (one per `aida run`
+  container); deleting the assessment deletes its keys.
 """
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.sql import func
@@ -32,8 +35,14 @@ class ApiKey(Base):
         index=True,
     )
     scope = Column(String(20), nullable=False, default="mcp")
+    assessment_id = Column(
+        Integer,
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_used_at = Column(DateTime(timezone=True), nullable=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     owner = relationship("User", backref="api_keys")
+    assessment = relationship("Assessment")

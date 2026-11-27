@@ -104,16 +104,18 @@ Then open **https://localhost:31337**, continue past the self-signed certificate
 
 ### Launch the Agent
 
-Create an assessment in the web UI, then:
+Create an assessment in the web UI, then click **Launch agent**: a terminal opens with Claude Code running inside the assessment's own container (it only needs Docker, and only sees that assessment). Or run it yourself:
 
 ```bash
-# Claude Code runs inside the assessment's own container — needs only Docker (preview)
+# Claude Code inside the assessment's own container — one per assessment, side by side
 aida run "target-corp"
 
 # Or use an AI CLI installed on this machine: Claude Code (default), Codex, Kimi, Qwen
 aida --assessment "target-corp"
 aida --assessment "target-corp" --cli codex
 ```
+
+The first `aida run` downloads the agent image. Each assessment's container asks you to log in to Claude once, since logins are never shared between assessments. Detach with `Ctrl-b d`: the agent keeps working, and `aida run` re-attaches.
 
 `aida stop` · `aida update` · `aida status` · `aida doctor` when something is off.
 
@@ -135,7 +137,7 @@ AIDA is model-agnostic. Any LLM with tool-calling support works.
 
 | Client | Setup |
 |--------|-------|
-| **Claude Code** | `python3 aida.py` (automatic) |
+| **Claude Code** | `aida run` in its own container, or `python3 aida.py` (automatic) |
 | **OpenAI Codex CLI** | `python3 aida.py --cli codex` (automatic) |
 | **Kimi Code CLI** | `python3 aida.py` (automatic) |
 | **External API** (OpenAI-compatible) | `python3 aida.py --base-url` |
