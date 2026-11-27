@@ -205,6 +205,21 @@ def _ip_matches_policy(client_host: Optional[str], policy: str) -> bool:
     return False
 
 
+def _match_api_key(db: Session, token: str) -> Optional[ApiKey]:
+    """Return the non-revoked key whose hash matches ``token``, if any."""
+    if len(token) < API_KEY_PREFIX_LEN or not token.startswith("aida_sk_"):
+        return None
+    candidates = (
+        db.query(ApiKey)
+        .filter(ApiKey.key_prefix == token[:API_KEY_PREFIX_LEN], ApiKey.revoked_at.is_(None))
+        .all()
+    )
+    for candidate in candidates:
+        if pwd_context.verify(token, candidate.key_hash):
+            return candidate
+    return None
+
+
 async def verify_mcp_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
@@ -220,14 +235,26 @@ async def verify_mcp_api_key(
     - 503 if HTTP MCP is disabled in platform settings.
     - 403 if the client IP is not allowed under the configured network policy.
     - 401 on any other auth failure.
+
+    Keys with scope "agent" (minted by `aida run` for per-assessment agent
+    containers) bypass the feature flag and are always accepted from private
+    addresses: the agent reaches the backend over a dedicated Docker bridge,
+    so it never comes from loopback. The toggle and policy keep governing
+    external MCP clients.
     """
-    if _get_platform_setting(db, "mcp_http_enabled", "false").lower() != "true":
+    token = (credentials.credentials if credentials and credentials.credentials else None) or api_key
+    key = _match_api_key(db, token) if token else None
+    agent_key = key is not None and key.scope == "agent"
+
+    if not agent_key and _get_platform_setting(db, "mcp_http_enabled", "false").lower() != "true":
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="HTTP MCP transport is disabled",
         )
 
     policy = _get_platform_setting(db, "mcp_http_network_policy", "localhost")
+    if agent_key and policy == "localhost":
+        policy = "lan"
     client_host = request.client.host if request.client else None
     if not _ip_matches_policy(client_host, policy):
         raise HTTPException(
@@ -235,7 +262,6 @@ async def verify_mcp_api_key(
             detail=f"Client {client_host} not permitted by network policy '{policy}'",
         )
 
-    token = (credentials.credentials if credentials and credentials.credentials else None) or api_key
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -248,22 +274,13 @@ async def verify_mcp_api_key(
             detail="Invalid API key",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if key is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or revoked API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    prefix = token[:API_KEY_PREFIX_LEN]
-    candidates = (
-        db.query(ApiKey)
-        .filter(ApiKey.key_prefix == prefix, ApiKey.revoked_at.is_(None))
-        .all()
-    )
-
-    for key in candidates:
-        if pwd_context.verify(token, key.key_hash):
-            key.last_used_at = datetime.now(timezone.utc)
-            db.commit()
-            return key
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or revoked API key",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    key.last_used_at = datetime.now(timezone.utc)
+    db.commit()
+    return key

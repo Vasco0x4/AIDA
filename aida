@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# aida — the AIDA command. install.sh links it into your PATH.
+# ==============================================================================
+#   aida start | stop | restart | status | logs | update | doctor | trust
+#       manage the platform (shell, needs only Docker)
+#   aida run | shell | ps | rm | stop <assessment>
+#       per-assessment agent containers (aida.py)
+#   aida --assessment <name> [...]
+#       classic launcher for an AI CLI installed on this machine (aida.py)
+# ==============================================================================
+
+set -euo pipefail
+
+# Resolve the symlink installed in PATH back to the checkout.
+self="$0"
+while [[ -L "$self" ]]; do
+    target=$(readlink "$self")
+    case "$target" in
+        /*) self="$target" ;;
+        *)  self="$(dirname "$self")/$target" ;;
+    esac
+done
+# shellcheck source=scripts/common.sh
+source "$(cd "$(dirname "$self")" && pwd)/scripts/common.sh"
+
+usage() {
+    cat <<EOF
+${BOLD}aida${NC} — AI-Driven Security Assessment
+
+${BOLD}Platform${NC}
+  aida start [--dev]      Start AIDA (web UI on https://localhost:${AIDA_PORT})
+  aida stop               Stop AIDA (data is kept)
+  aida restart            Restart AIDA
+  aida status             Show what is running, the URLs and the setup code
+  aida logs [service]     Follow logs (backend, frontend, caddy, postgres...)
+  aida update             Get the latest version and restart
+  aida doctor             Check the installation and explain any problem
+  aida trust              Trust AIDA's certificate on this machine (no more browser warning)
+
+${BOLD}Agent${NC}
+  aida run <assessment>   Run Claude Code inside the assessment's own container
+  aida shell <assessment> Open a shell in that container
+  aida ps                 List agent containers
+  aida stop <assessment>  Stop an agent container
+  aida --assessment <name> [--cli codex|kimi|qwen]
+                          Use an AI CLI installed on this machine
+
+Docs: https://github.com/Vasco0x4/AIDA/blob/main/Docs/INSTALLATION.md
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# Python commands (aida.py creates its own virtualenv on first use)
+# ------------------------------------------------------------------------------
+
+run_python() {
+    local py=""
+    if [[ -x "$AIDA_ROOT/.venv/bin/python" ]]; then
+        py="$AIDA_ROOT/.venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        py=python3
+    else
+        die "This command needs Python 3.10 or newer." \
+            "macOS: brew install python  ·  Debian/Ubuntu: sudo apt install python3 python3-venv"
+    fi
+    exec "$py" "$AIDA_ROOT/aida.py" "$@"
+}
+
+# ------------------------------------------------------------------------------
+# status
+# ------------------------------------------------------------------------------
+
+SERVICE_CONTAINERS=(aida_caddy aida_frontend aida_backend aida_postgres aida_docker_proxy aida-pentest)
+
+describe_container() {
+    local name=$1 state health
+    state=$(container_state "$name")
+    health=$(container_health "$name")
+    if [[ -z "$state" ]]; then
+        echo "not created"
+    elif [[ -n "$health" ]]; then
+        echo "$state ($health)"
+    else
+        echo "$state"
+    fi
+}
+
+cmd_status() {
+    require_docker
+    section "AIDA status"
+    local name desc color
+    for name in "${SERVICE_CONTAINERS[@]}"; do
+        if [[ "$name" == aida-pentest && "$(cat "$AIDA_STATE_DIR/container-preference" 2>/dev/null || true)" == exegol ]]; then
+            printf "  %-18s %s\n" "$name" "${DIM}not used (Exegol selected)${NC}"
+            continue
+        fi
+        desc=$(describe_container "$name")
+        case "$desc" in
+            "running"|"running (healthy)") color=$GREEN ;;
+            "running (starting)")          color=$YELLOW ;;
+            *)                             color=$RED ;;
+        esac
+        printf "  %-18s %s\n" "$name" "${color}${desc}${NC}"
+    done
+    echo
+    if [[ "$(container_state aida_caddy)" == running ]]; then
+        print_urls
+        print_setup_code
+    elif [[ "$(container_state aida_frontend)" == running ]] && curl -fsS --max-time 2 http://localhost:5173 >/dev/null 2>&1; then
+        echo "  Web UI     ${BOLD}http://localhost:5173${NC}   (dev mode)"
+    else
+        echo "  AIDA is not running. Start it with: ${BOLD}aida start${NC}"
+    fi
+    echo
+}
+
+# ------------------------------------------------------------------------------
+# update
+# ------------------------------------------------------------------------------
+
+cmd_update() {
+    require_docker
+    section "Updating AIDA"
+    cd "$AIDA_ROOT"
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        if [[ -z "$(git symbolic-ref -q HEAD || true)" ]]; then
+            warn "This checkout is not on a branch — skipping the code update."
+        elif [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+            warn "You have local changes in $AIDA_ROOT — skipping the code update (git pull)."
+        else
+            local before
+            before=$(git rev-parse HEAD)
+            if git pull --ff-only --quiet; then
+                if [[ "$(git rev-parse HEAD)" == "$before" ]]; then
+                    log "Code already up to date"
+                else
+                    log "Code updated to $(git log -1 --format='%h (%cd)' --date=short)"
+                fi
+            else
+                warn "git pull failed — keeping the current code."
+            fi
+        fi
+    fi
+    # Always re-check the images: they are published a few minutes after the
+    # code, so an update right after a release may have missed them.
+    rm -f "$AIDA_STATE_DIR/last-pull"
+    exec "$AIDA_ROOT/start.sh"
+}
+
+# ------------------------------------------------------------------------------
+# doctor
+# ------------------------------------------------------------------------------
+
+DOCTOR_FAILED=0
+ok()  { echo "  ${GREEN}✓${NC} $*"; }
+ko()  { echo "  ${RED}✗${NC} $1"; shift; for h in "$@"; do echo "      ${DIM}→${NC} $h"; done; DOCTOR_FAILED=1; }
+info(){ echo "  ${DIM}·${NC} $*"; }
+
+cmd_doctor() {
+    section "AIDA doctor"
+    info "$(uname -s) $(uname -m), AIDA $(git -C "$AIDA_ROOT" log -1 --format='%h (%cd)' --date=short 2>/dev/null || echo '(not a git checkout)'), in $AIDA_ROOT"
+
+    # Docker
+    if ! command -v docker >/dev/null 2>&1; then
+        ko "Docker is not installed" "See https://docs.docker.com/get-docker/ (or OrbStack on macOS)"
+        echo; return 1
+    fi
+    local out
+    if ! out=$(docker info --format '{{.ServerVersion}}' 2>&1); then
+        if echo "$out" | grep -qi "permission denied"; then
+            ko "Docker refuses your user" "sudo usermod -aG docker \$USER, then log out and back in"
+        else
+            ko "Docker is not running" "Start Docker Desktop / OrbStack (Linux: sudo systemctl start docker)"
+        fi
+        echo; return 1
+    fi
+    ok "Docker $out"
+    if docker compose version >/dev/null 2>&1; then
+        ok "Docker Compose $(docker compose version --short 2>/dev/null)"
+    else
+        ko "Docker Compose v2 is missing" "Linux: sudo apt install docker-compose-plugin"
+    fi
+
+    # Containers
+    local name desc
+    for name in "${SERVICE_CONTAINERS[@]}"; do
+        if [[ "$name" == aida-pentest && "$(cat "$AIDA_STATE_DIR/container-preference" 2>/dev/null || true)" == exegol ]]; then
+            info "$name not used (Exegol selected)"
+            continue
+        fi
+        desc=$(describe_container "$name")
+        case "$desc" in
+            "running"|"running (healthy)") ok "$name $desc" ;;
+            "running (starting)")          info "$name $desc" ;;
+            "not created")                 ko "$name is not created" "Run: aida start" ;;
+            *)                             ko "$name is $desc" "See why: aida logs ${name#aida_}" ;;
+        esac
+    done
+
+    # Endpoints
+    if curl -fsS --max-time 5 "$AIDA_BACKEND_URL/health" >/dev/null 2>&1; then
+        ok "Backend API answers on 127.0.0.1:8000"
+    else
+        ko "Backend API does not answer on 127.0.0.1:8000" "See why: aida logs backend"
+    fi
+    if curl -fsSk --max-time 5 "https://localhost:${AIDA_PORT}/" >/dev/null 2>&1; then
+        ok "Web UI answers on https://localhost:${AIDA_PORT}"
+        local code
+        code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:${AIDA_PORT}/" || true)
+        if [[ "$code" =~ ^30[1278]$ ]]; then
+            ok "http://localhost:${AIDA_PORT} redirects to https"
+        else
+            info "http://localhost:${AIDA_PORT} answered $code instead of a redirect"
+        fi
+    else
+        local owner
+        owner=$(port_owner "$AIDA_PORT")
+        if [[ -n "$owner" ]]; then
+            ko "Port ${AIDA_PORT} is taken by '$owner'" "Stop it, or use another port: AIDA_PORT=8443 aida start"
+        else
+            ko "Web UI does not answer on https://localhost:${AIDA_PORT}" "See why: aida logs caddy, aida logs frontend"
+        fi
+    fi
+
+    case "$(setup_required)" in
+        true)  info "No admin account yet — setup code: $(cat "$AIDA_SETUP_CODE_FILE" 2>/dev/null || echo 'see aida logs backend')" ;;
+        false) ok "Admin account created" ;;
+    esac
+    local ip
+    ip=$(lan_ip)
+    [[ -n "$ip" ]] && info "From other machines: https://${ip}:${AIDA_PORT}"
+    if curl -fsS --max-time 2 http://127.0.0.1:9876/status >/dev/null 2>&1; then
+        ok "Host helper running (open folders / terminals from the UI)"
+    else
+        info "Host helper not running (optional: lets the UI open folders and terminals)"
+    fi
+
+    echo
+    if [[ $DOCTOR_FAILED -eq 0 ]]; then
+        log "Everything looks good."
+    else
+        warn "Some checks failed. Need help? Paste this output in a GitHub issue or on Discord."
+    fi
+    echo
+    return $DOCTOR_FAILED
+}
+
+# ------------------------------------------------------------------------------
+# trust
+# ------------------------------------------------------------------------------
+
+cmd_trust() {
+    require_docker
+    [[ "$(container_state aida_caddy)" == running ]] || die "AIDA is not running." "Start it first: aida start"
+    local cert="$AIDA_STATE_DIR/aida-local-ca.crt"
+    mkdir -p "$AIDA_STATE_DIR"
+    docker cp aida_caddy:/data/caddy/pki/authorities/local/root.crt "$cert" >/dev/null 2>&1 \
+        || die "The certificate authority does not exist yet." \
+               "Open https://localhost:${AIDA_PORT} once in your browser, then run: aida trust"
+    section "Trusting AIDA's local certificate authority"
+    case "$(uname -s)" in
+        Darwin)
+            echo "  Adding it to the macOS system keychain (asks for your password)..."
+            sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$cert"
+            ;;
+        Linux)
+            if command -v update-ca-certificates >/dev/null 2>&1; then
+                sudo cp "$cert" /usr/local/share/ca-certificates/aida-local-ca.crt
+                sudo update-ca-certificates >/dev/null
+            elif command -v update-ca-trust >/dev/null 2>&1; then
+                sudo cp "$cert" /etc/pki/ca-trust/source/anchors/aida-local-ca.crt
+                sudo update-ca-trust
+            else
+                die "Don't know how to add a certificate on this system." "Import $cert into your browser manually."
+            fi
+            ;;
+        *)
+            die "Unsupported system." "Import $cert into your browser manually."
+            ;;
+    esac
+    log "Done — restart your browser."
+    hint "Firefox keeps its own list: Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import → $cert"
+    hint "Other computers or phones: copy $cert to them and trust it the same way."
+}
+
+# ------------------------------------------------------------------------------
+# Dispatch
+# ------------------------------------------------------------------------------
+
+cmd="${1:-help}"
+case "$cmd" in
+    help|-h|--help) usage ;;
+    start)   shift; exec "$AIDA_ROOT/start.sh" "$@" ;;
+    restart) shift; exec "$AIDA_ROOT/restart.sh" "$@" ;;
+    stop)
+        # `aida stop` stops the platform; `aida stop <assessment>` an agent.
+        if [[ $# -le 1 ]]; then exec "$AIDA_ROOT/stop.sh"; fi
+        run_python "$@" ;;
+    status)  cmd_status ;;
+    logs)
+        shift
+        require_docker; detect_compose
+        compose logs --follow --tail=200 "$@" ;;
+    update)  cmd_update ;;
+    doctor)  cmd_doctor ;;
+    trust)   cmd_trust ;;
+    *)       run_python "$@" ;;
+esac

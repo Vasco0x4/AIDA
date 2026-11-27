@@ -32,31 +32,31 @@ Generates `.aida/mcp-config.json` pointing at the backend venv's Python. No netw
 
 1. Open AIDA → Settings → **MCP Access**.
 2. Toggle **Enable HTTP MCP transport**.
-3. Pick a network policy (localhost / LAN / any). LAN and Any require `BACKEND_BIND_HOST=0.0.0.0` in `.env` and a backend restart.
+3. Pick a network policy: **localhost** for clients on the AIDA machine, **LAN** for clients on other machines (they connect through the web UI's HTTPS port).
 4. Click **Create API key**, copy the value shown once.
 5. Paste the generated snippet into your MCP client's config. For Claude Code:
 
-The endpoint is reachable at three URLs depending on how AIDA was started:
+The endpoint is reachable at two URLs:
 
-| Mode | URL |
-|------|-----|
-| Local (default) | `http://localhost:31337/mcp` (via Nginx) or `http://localhost:8000/mcp` (direct backend) |
-| `--lan` | `https://<LAN_IP>/mcp` (via Caddy) |
-| `--domain example.com` | `https://example.com/mcp` (via Caddy + Let's Encrypt) |
+| From | URL | Network policy |
+|------|-----|----------------|
+| The AIDA machine | `http://localhost:8000/mcp` (backend, plain HTTP on loopback) | localhost |
+| Another machine | `https://<AIDA_IP>:31337/mcp` (through Caddy, self-signed certificate) | LAN |
 
 ```bash
-# Local
+# On the AIDA machine
 claude mcp add --transport http aida http://localhost:8000/mcp \
   --header "Authorization: Bearer aida_sk_..."
 
-# LAN — use the LAN IP shown by ./start.sh --lan
-claude mcp add --transport http aida https://192.168.1.42/mcp \
-  --header "Authorization: Bearer aida_sk_..."
-
-# Public domain
-claude mcp add --transport http aida https://aida.example.com/mcp \
+# From another machine — use the Network address shown by `aida status`
+claude mcp add --transport http aida https://192.168.1.42:31337/mcp \
   --header "Authorization: Bearer aida_sk_..."
 ```
+
+Node-based clients (Claude Code, Codex...) reject the self-signed certificate
+until they trust AIDA's CA: copy `.aida/aida-local-ca.crt` from the AIDA
+machine (created by `aida trust`) and set
+`NODE_EXTRA_CA_CERTS=/path/to/aida-local-ca.crt` before starting the client.
 
 In a client's `mcp.json`:
 
@@ -64,7 +64,7 @@ In a client's `mcp.json`:
 {
   "mcpServers": {
     "aida": {
-      "url": "https://aida.example.com/mcp",
+      "url": "https://192.168.1.42:31337/mcp",
       "headers": { "Authorization": "Bearer aida_sk_..." }
     }
   }
@@ -92,10 +92,9 @@ codex mcp add aida --url http://localhost:8000/mcp \
 - **Keys are bcrypt-hashed** at rest; the plaintext is shown exactly once on creation.
 - **Revocation is instant** via the Settings UI.
 - **Network policy** is enforced at the application layer even when the socket binds to 0.0.0.0.
-- **TLS is optional and mode-driven.** In `./start.sh --lan` and `./start.sh --domain` modes,
-  Caddy fronts the backend and the MCP endpoint is also reachable at
-  `https://<host>/mcp`. In default local mode there is no TLS — `http://localhost:8000/mcp`
-  is fine because the traffic stays on your machine. See [`TLS.md`](TLS.md).
+- **TLS for remote clients.** Other machines reach `/mcp` through Caddy over HTTPS
+  (`https://<host>:31337/mcp`). `http://localhost:8000/mcp` is plain HTTP, which is fine
+  because that traffic never leaves the AIDA machine.
 
 ---
 

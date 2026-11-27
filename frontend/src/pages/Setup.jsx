@@ -5,13 +5,23 @@
  * create the admin account with credentials of their choice. Once any user
  * exists, the backend rejects /auth/setup with 403 and this page is no longer
  * reachable.
+ *
+ * The UI is reachable from the network, so the backend also asks for the
+ * one-time setup code printed by `aida start`. The link it prints carries the
+ * code in the URL fragment (#code=...), which never reaches the server.
  */
 import { useState } from 'react';
-import { User, Lock, Mail, AlertCircle, ShieldCheck } from 'lucide-react';
+import { User, Lock, Mail, AlertCircle, ShieldCheck, KeyRound } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
+function codeFromUrl() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  return params.get('code') || '';
+}
+
 export default function Setup() {
-  const { completeSetup, backendUnreachable } = useAuth();
+  const { completeSetup, backendUnreachable, setupCodeRequired } = useAuth();
+  const [setupCode, setSetupCode] = useState(codeFromUrl);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -34,7 +44,11 @@ export default function Setup() {
 
     setSubmitting(true);
     try {
-      await completeSetup(username, password, email || undefined);
+      await completeSetup(username, password, email || undefined, setupCode.trim() || undefined);
+      // Don't leave the (now used) code in the address bar.
+      if (window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
     } catch (err) {
       setError(err.response?.data?.detail || 'Setup failed');
     } finally {
@@ -70,6 +84,26 @@ export default function Setup() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {setupCodeRequired && (
+              <div>
+                <Field label="Setup code" icon={<KeyRound className="w-4 h-4" />}>
+                  <input
+                    type="text"
+                    value={setupCode}
+                    onChange={(e) => setSetupCode(e.target.value)}
+                    required
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full pl-10 pr-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 font-mono tracking-wider uppercase focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+                    placeholder="ABCD-EFGH"
+                  />
+                </Field>
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  Shown in the terminal where you started AIDA. Lost it? Run <code>aida status</code>.
+                </p>
+              </div>
+            )}
+
             <Field label="Username" icon={<User className="w-4 h-4" />}>
               <input
                 type="text"

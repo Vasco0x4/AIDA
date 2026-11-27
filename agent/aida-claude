@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Start Claude Code with the AIDA system prompt and MCP config that
+# `aida run` writes into ~/.aida/ for this assessment container.
+# Extra arguments are passed through to `claude` (e.g. --continue).
+set -u
+
+AIDA_DIR="$HOME/.aida"
+args=()
+
+if [ -f "$AIDA_DIR/system-prompt.md" ]; then
+    args+=(--system-prompt "$(cat "$AIDA_DIR/system-prompt.md")")
+fi
+if [ -f "$AIDA_DIR/mcp.json" ]; then
+    args+=(--mcp-config "$AIDA_DIR/mcp.json")
+fi
+if [ "${AIDA_SKIP_PERMISSIONS:-0}" = "1" ]; then
+    args+=(--dangerously-skip-permissions)
+elif [ -n "${AIDA_PERMISSION_MODE:-}" ]; then
+    args+=(--permission-mode "$AIDA_PERMISSION_MODE")
+fi
+if [ -n "${AIDA_MODEL:-}" ]; then
+    args+=(--model "$AIDA_MODEL")
+fi
+
+claude "${args[@]}" "$@"
+
+# Inside the tmux session, keep the pane alive after Claude exits so the
+# user lands in a shell instead of the session vanishing.
+if [ "${AIDA_KEEP_SHELL:-0}" = "1" ]; then
+    echo
+    echo "Claude exited. 'aida-claude' starts a new session, 'aida-claude --continue' resumes the last one."
+    echo "Detach with Ctrl-b d — the container keeps running."
+    export AIDA_KEEP_SHELL=0
+    exec bash -l
+fi

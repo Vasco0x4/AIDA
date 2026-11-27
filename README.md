@@ -94,36 +94,28 @@ Your expertise stays where it matters. The grunt work runs on its own.
 
 ## Quick Start
 
-**Prerequisites:** Docker Desktop + any AI client (Claude, Gemini, GPT...)
+**You need:** Docker ([Docker Desktop](https://www.docker.com/products/docker-desktop/) or [OrbStack](https://orbstack.dev) on macOS) and git.
 
 ```bash
-git clone https://github.com/Vasco0x4/AIDA.git
-cd AIDA
-./start.sh
+curl -fsSL https://raw.githubusercontent.com/Vasco0x4/AIDA/main/install.sh | bash
 ```
 
-Dashboard: `http://localhost:31337`
-
-> `./start.sh --dev` — hot reload for contributors
-> `./start.sh --lan` — share across your local network (HTTPS, self-signed)
-> `./start.sh --domain x.com` — public deploy with Let's Encrypt
-> `./start.sh --localhost` — run commands directly on the host (no pentest container) — see [Localhost Mode](Docs/INSTALLATION.md#localhost-mode)
+Then open **https://localhost:31337**, continue past the self-signed certificate warning, and create your admin account with the **setup code** shown in the terminal. Other machines on your network use `https://<your-ip>:31337`.
 
 ### Launch the Agent
 
+Create an assessment in the web UI, then:
+
 ```bash
-# Launches Claude Code by default
-python3 aida.py --assessment "target-corp"
+# Claude Code runs inside the assessment's own container — needs only Docker (preview)
+aida run "target-corp"
 
-# Auto-detect Claude, Codex, Kimi, or Qwen
-python3 aida.py --assessment "target-corp" --cli auto
-
-# Force OpenAI Codex
-python3 aida.py --assessment "target-corp" --cli codex
-
-# No confirmation prompts
-python3 aida.py --assessment "target-corp" --yes
+# Or use an AI CLI installed on this machine: Claude Code (default), Codex, Kimi, Qwen
+aida --assessment "target-corp"
+aida --assessment "target-corp" --cli codex
 ```
+
+`aida stop` · `aida update` · `aida status` · `aida doctor` when something is off.
 
 ### Define Your Scope
 
@@ -214,6 +206,8 @@ AIDA is actively developed.
 - Enhanced CLI capabilities
 
 Issues and PRs welcome → [GitHub Issues](https://github.com/Vasco0x4/AIDA/issues)
+
+Hacking on AIDA? `./start.sh --dev` runs it from source with hot reload — see [dev mode](Docs/INSTALLATION.md#contributing-dev-mode).
 
 ---
 

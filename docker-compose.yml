@@ -1,64 +1,85 @@
+# =============================================================================
+# AIDA — Docker Compose
+# =============================================================================
+# Started by `aida start` (or ./start.sh), which also creates backend/.env and
+# the setup code. Images come from Docker Hub, so nothing is built locally.
+#
+#   https://<this machine>:31337   web UI (Caddy, self-signed certificate;
+#                                  plain http:// on the same port redirects)
+#   127.0.0.1:8000                 backend API, for the CLI / MCP on this host
+#
+# Contributors: `aida start --dev` adds docker-compose.dev.yml on top
+# (source mounts, hot reload, Vite on http://localhost:5173).
+# =============================================================================
+
+name: aida
+
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:16-alpine
-    container_name: aida_postgres
-    env_file:
-      - backend/.env
+  # Reverse proxy — the only service reachable from the network.
+  caddy:
+    image: caddy:2-alpine
+    container_name: aida_caddy
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-aida}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aida}
-      POSTGRES_DB: ${POSTGRES_DB:-aida_assessments}
+      AIDA_PORT: ${AIDA_PORT:-31337}
     ports:
-      # Bind to localhost only — the database must never be reachable from
-      # the LAN. The backend talks to postgres over the internal docker
-      # network, so this mapping only exists for host-side dev tools (psql,
-      # pgAdmin, DBeaver). Remove the line entirely to lock it down further.
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      # Same port inside and outside the container so http → https
+      # redirects keep the port the browser used.
+      - "${AIDA_BIND:-0.0.0.0}:${AIDA_PORT:-31337}:${AIDA_PORT:-31337}"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Holds the local certificate authority. Keep it: browsers and devices
+      # that trusted it (`aida trust`) keep trusting AIDA across restarts.
+      - caddy_data:/data
+      - caddy_config:/config
     networks:
       - aida-network
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aida} -d ${POSTGRES_DB:-aida_assessments}" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+    depends_on:
+      - frontend
 
-  # FastAPI Backend
+  # Web UI — static React build served by Nginx, which also proxies /api,
+  # /api/ws and /mcp to the backend. Only reachable through Caddy.
+  frontend:
+    image: vasco0x4/aida-frontend:${AIDA_VERSION:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: aida_frontend
+    restart: unless-stopped
+    networks:
+      - aida-network
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   backend:
-    image: vasco0x4/aida-backend:latest
+    image: vasco0x4/aida-backend:${AIDA_VERSION:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: aida_backend
+    restart: unless-stopped
     env_file:
       - backend/.env
     environment:
-      # DB_HOST is set by switch-db.sh in root .env (default: postgres)
-      POSTGRES_HOST: ${DB_HOST:-postgres}
-      POSTGRES_DB: ${DB_NAME:-aida_assessments}
-      # Set to 'development' by start.sh --dev for hot reload
+      POSTGRES_HOST: postgres
       ENVIRONMENT: ${ENVIRONMENT:-production}
-      # Injected by start.sh --lan (dev mode) — includes LAN IP + localhost on port 5173
-      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
-      # Route docker CLI through the socket proxy instead of raw daemon socket.
-      # The proxy only allows inspect/exec/start — no run/create/volumes.
+      # Route docker CLI calls through the socket proxy instead of the raw
+      # daemon socket. The proxy only allows inspect/exec/start.
       DOCKER_HOST: tcp://docker-proxy:2375
+      # One-time code required to create the first admin account. start.sh
+      # generates it; if empty, the backend makes one and prints it in its logs.
+      AIDA_SETUP_CODE: ${AIDA_SETUP_CODE:-}
     ports:
-      # Bind host is configurable via BACKEND_BIND_HOST. Default 127.0.0.1
-      # keeps the API off the LAN. Set to 0.0.0.0 to expose the HTTP MCP
-      # transport to LAN clients (still gated by API-key auth + network
-      # policy in platform_settings).
-      - "${BACKEND_BIND_HOST:-127.0.0.1}:8000:8000"
+      # Localhost only: the CLI and MCP server on this machine use it. Other
+      # machines go through Caddy (https://<host>:31337/api, /mcp).
+      - "127.0.0.1:8000:8000"
     volumes:
-      # Mount source code for hot reload (exclude venv to avoid conflicts)
-      # :z flag enables SELinux compatibility (RHEL/Fedora)
-      - ./backend:/app:z
-      - /app/venv
-      # Docker socket removed — backend talks to docker-proxy instead.
-      # Mount logs directory with SELinux flag
       - ./backend/logs:/app/logs:z
     networks:
       - aida-network
@@ -67,64 +88,47 @@ services:
         condition: service_healthy
       docker-proxy:
         condition: service_started
-    restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-  # React Frontend
-  frontend:
-    image: vasco0x4/aida-frontend:latest
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: aida_frontend
+  postgres:
+    image: postgres:16-alpine
+    container_name: aida_postgres
+    restart: unless-stopped
+    env_file:
+      - backend/.env
     environment:
-      # In dev+LAN mode start.sh exports VITE_API_URL=http://[IP]:8000/api,
-      # which takes priority over the localhost default (Vite gives process env
-      # vars higher priority than .env files).
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
-    ports:
-      # Bind host is configurable via FRONTEND_BIND_HOST. Default 127.0.0.1
-      # keeps Vite off the LAN. Set to 0.0.0.0 with --dev --lan.
-      - "${FRONTEND_BIND_HOST:-127.0.0.1}:5173:5173"
+      POSTGRES_USER: ${POSTGRES_USER:-aida}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aida}
+      POSTGRES_DB: ${POSTGRES_DB:-aida_assessments}
+    # No host port: only the backend talks to the database, over the internal
+    # network. (It used to be published on 5432 and clashed with local
+    # Postgres installs.)
     volumes:
-      # Mount source code for hot reload (exclude node_modules to avoid conflicts)
-      # :z flag enables SELinux compatibility (RHEL/Fedora)
-      - ./frontend:/app:z
-      - /app/node_modules
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - aida-network
-    depends_on:
-      - backend
-    restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5173" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aida} -d ${POSTGRES_DB:-aida_assessments}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # AIDA Pentest Container
-  # Lightweight execution environment for AI-driven assessments.
-  # The backend connects to this container via Docker socket (docker exec).
-  # Docker Socket Proxy — exposes a filtered Docker API to the backend.
-  # Only container inspection + exec are allowed; create/run/volumes/images
-  # are blocked, so a compromised backend cannot escape to the host.
+  # Docker socket proxy — exposes a filtered Docker API to the backend. Only
+  # container inspection, exec and start are allowed; create/run/volumes/
+  # images are blocked, so a compromised backend cannot escape to the host.
   docker-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: aida_docker_proxy
     restart: unless-stopped
     environment:
-      # Read-only by default; POST is needed for exec & start.
-      POST: 1
-      # Allowed API sections
-      CONTAINERS: 1   # inspect, list, start, stop
-      EXEC: 1         # docker exec
-      # Everything else stays 0 (denied)
+      POST: 1          # needed for exec & start
+      CONTAINERS: 1    # inspect, list, start, stop
+      EXEC: 1          # docker exec
       IMAGES: 0
       VOLUMES: 0
       NETWORKS: 0
@@ -145,24 +149,24 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - aida-network
-    # This container only needs to be reachable by the backend, never exposed.
 
+  # Built-in pentesting toolbox. The backend runs the agent's commands in it
+  # with `docker exec`. Skipped when Exegol is selected in Settings.
   aida-pentest:
-    image: vasco0x4/aida-pentest:latest
+    image: vasco0x4/aida-pentest:${AIDA_VERSION:-latest}
     build:
       context: ./pentest
       dockerfile: Dockerfile
     container_name: aida-pentest
+    restart: unless-stopped
     tty: true
     stdin_open: true
     volumes:
-      # Workspace bind mount — same /workspace path as Exegol.
-      # workspace_service.py discovers this path via docker inspect, so the
-      # host path resolution in aida.py continues to work without changes.
+      # workspace_service.py discovers this path via docker inspect, so
+      # aida.py can map assessment folders back to the host.
       - ${HOME}/.aida/workspaces:/workspace
     networks:
       - pentest-network
-    restart: unless-stopped
 
 networks:
   aida-network:
@@ -175,3 +179,7 @@ networks:
 volumes:
   postgres_data:
     name: aida_postgres_data
+  caddy_data:
+    name: aida_caddy_data
+  caddy_config:
+    name: aida_caddy_config

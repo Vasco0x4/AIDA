@@ -121,6 +121,12 @@ class AidaMCPService:
         self.command_history_limit_cache_time: float = 0
         self.command_history_limit_cache_ttl: int = 60  # Cache for 60 seconds
 
+    def set_token(self, token: str) -> None:
+        """Replace the bearer token used for backend REST calls."""
+        self.token = token
+        if self.http_client:
+            self.http_client.headers["Authorization"] = f"Bearer {token}"
+
     async def initialize(self):
         """Initialize HTTP client and auto-detect containers"""
         if not self.http_client:

@@ -16,6 +16,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [backendUnreachable, setBackendUnreachable] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
+  const [setupCodeRequired, setSetupCodeRequired] = useState(false);
 
   // On mount: check whether the platform needs initial setup, then validate
   // any stored token by fetching /auth/me.
@@ -24,9 +25,10 @@ export function AuthProvider({ children }) {
 
     (async () => {
       try {
-        const { setup_required } = await fetchSetupStatus();
+        const { setup_required, setup_code_required } = await fetchSetupStatus();
         if (cancelled) return;
         setSetupRequired(setup_required);
+        setSetupCodeRequired(!!setup_code_required);
         setBackendUnreachable(false);
 
         if (setup_required) {
@@ -76,8 +78,8 @@ export function AuthProvider({ children }) {
     return result;
   }, []);
 
-  const completeSetup = useCallback(async (username, password, email) => {
-    const result = await apiSetupAdmin(username, password, email);
+  const completeSetup = useCallback(async (username, password, email, setupCode) => {
+    const result = await apiSetupAdmin(username, password, email, setupCode);
     setToken(result.token);
     setUser(result.user);
     setSetupRequired(false);
@@ -117,6 +119,7 @@ export function AuthProvider({ children }) {
       isAuthenticated,
       mustChangePassword,
       setupRequired,
+      setupCodeRequired,
       backendUnreachable,
       login, logout, refreshUser, completeSetup,
     }}>

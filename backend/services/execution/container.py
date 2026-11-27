@@ -180,15 +180,17 @@ class ContainerExecutionBackend(ExecutionBackend):
             }
 
         # unset -f cd → RVM hooks redefine `cd` with noisy chpwd side effects.
-        # source /root/.bashrc → picks up PATH for pre-installed tools.
+        # source ~/.bashrc → picks up PATH for pre-installed tools. ~ rather
+        # than /root: agent containers run as a non-root user, for whom
+        # sourcing /root/.bashrc fails and used to skip the command entirely.
         if cwd:
             wrapped = (
-                f"unset -f cd 2>/dev/null; source /root/.bashrc 2>/dev/null"
-                f" && cd {shlex.quote(cwd)} 2>/dev/null && {command}"
+                f"unset -f cd 2>/dev/null; source ~/.bashrc 2>/dev/null;"
+                f" cd {shlex.quote(cwd)} 2>/dev/null && {command}"
             )
         else:
             wrapped = (
-                f"unset -f cd 2>/dev/null; source /root/.bashrc 2>/dev/null && {command}"
+                f"unset -f cd 2>/dev/null; source ~/.bashrc 2>/dev/null; {command}"
             )
 
         argv = ["docker", "exec"]
